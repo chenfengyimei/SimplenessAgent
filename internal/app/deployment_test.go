@@ -375,6 +375,52 @@ func TestRunCoordinatorCycleCreatesAndRunsOneAssignment(t *testing.T) {
 	}
 }
 
+func TestRecoverRunningAgentAssignmentsFailsAgentAndPausesTask(t *testing.T) {
+	ctx := context.Background()
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, planVersion, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "recover agent", Goal: "inspect", AllowSubagents: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := service.AssignReadOnlyAgent(ctx, AssignAgentInput{TaskID: created.ID, StepID: planVersion.Steps[0].StepID, DeploymentID: deployment.ID, Role: "RECON"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.transitionTask(ctx, created.ID, contracts.TaskReady, contracts.TaskRunning, "TASK_STATUS_CHANGED"); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.transitionAgent(ctx, agent, contracts.AgentPending, contracts.AgentRunning, "AGENT_STATUS_CHANGED"); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.RecoverRunningAgentAssignments(ctx, created.ID)
+	if err != nil || snapshot.Task.Status != contracts.TaskPaused {
+		t.Fatal(snapshot, err)
+	}
+	assignments, err := service.ListAgentAssignments(ctx, created.ID)
+	if err != nil || len(assignments) != 1 || assignments[0].Status != contracts.AgentFailed {
+		t.Fatal(assignments, err)
+	}
+	found := false
+	for _, event := range snapshot.Events {
+		found = found || event.EventType == "AGENT_RECOVERY_FAILED"
+	}
+	if !found {
+		t.Fatal("agent recovery event was not persisted")
+	}
+}
+
 func contentHash(value []byte) string {
 	digest := sha256.Sum256(value)
 	return "sha256:" + hex.EncodeToString(digest[:])

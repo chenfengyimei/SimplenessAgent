@@ -91,6 +91,11 @@
 - 新增 `RunCoordinatorCycle`：只为显式允许子 Agent 的 `READY` Task 调度唯一依赖就绪的 `READ` Step；优先复用其 `PENDING` Assignment，再同步等待执行和 Handoff。
 - Coordinator 拒绝多个就绪步骤、运行中 Assignment、非只读 Step 与 Assignment/当前 Plan 权限快照不一致的情况，保持单层、非递归和 fail-closed。
 
+### 2026-08-11 Agent assignment recovery audit
+
+- 新增 `RecoverRunningAgentAssignments`：遗留 `RUNNING` Assignment 先以 `AGENT_RECOVERY_FAILED` 事件持久化为失败，再复用 Task Checkpoint/暂停恢复路径。
+- 恢复不会重放模型、工具或 Handoff；没有运行中 Assignment 的 Task 也不会被此入口隐式改变。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。

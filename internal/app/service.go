@@ -1049,6 +1049,37 @@ func (s *Service) RecoverRunningTask(ctx context.Context, taskID string) (TaskSn
 	return s.CheckpointTask(ctx, taskID)
 }
 
+// RecoverRunningAgentAssignments closes interrupted child execution without
+// replaying it. Agent assignment status is audited first, then the existing
+// task recovery path checkpoints and pauses the parent task.
+func (s *Service) RecoverRunningAgentAssignments(ctx context.Context, taskID string) (TaskSnapshot, error) {
+	item, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if item.Status != contracts.TaskRunning {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "agent recovery requires a RUNNING task")
+	}
+	assignments, err := s.store.ListAgentAssignments(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	recovered := 0
+	for _, assignment := range assignments {
+		if assignment.Status != contracts.AgentRunning {
+			continue
+		}
+		if err = s.transitionAgent(ctx, assignment, contracts.AgentRunning, contracts.AgentFailed, "AGENT_RECOVERY_FAILED"); err != nil {
+			return TaskSnapshot{}, err
+		}
+		recovered++
+	}
+	if recovered == 0 {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "task has no running agent assignments to recover")
+	}
+	return s.RecoverRunningTask(ctx, taskID)
+}
+
 func (s *Service) VerifyTask(ctx context.Context, taskID string) (verifier.FinalReport, error) {
 	item, err := s.store.GetTask(ctx, taskID)
 	if err != nil {
