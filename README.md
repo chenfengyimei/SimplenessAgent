@@ -47,6 +47,7 @@ go run ./cmd/simpleness -- --data-dir .\data task agents <task-id>
 ## 当前已实现
 
 - 版本化领域契约与 SQLite/WAL 迁移。
+- `desktop/` Wails + Vue TypeScript 只读任务工作台：读取同一 App Service 的本地任务快照，不持有独立业务状态。
 - Task/Step 状态机、追加事件、DAG 计划校验和 Checkpoint。
 - 授权工作区边界与只读文件工具。
 - 内容寻址 Artifact、Evidence 和恢复读取。
@@ -73,7 +74,11 @@ The initial framework is implemented and tested as a P0/P1 vertical slice:
 - A bounded read-only Agent Worker with a fixed executor contract, one-tool-at-a-time loop, allowlist/risk/Schema checks, repeated-action blocking and token/duration budgets. The App Service and CLI persist an `AGENT_REPORT` Artifact/Evidence before the deterministic verifier decides completion.
 - Integration, recovery, state-machine, plan and path-boundary tests.
 
-The implemented runner intentionally executes a safe reconnaissance step only. Model-driven planning/execution and mutating tools are defined by contracts but remain disabled until their approvals, write-ahead intent records and recovery checks are complete.
+The deterministic reconnaissance runner remains available as a safe baseline. Model-driven planning and bounded read-only execution are now available through an explicit Deployment; mutating execution remains behind approval, write-ahead intent and recovery boundaries.
+
+## Desktop workbench
+
+`desktop/` is a Wails v2 + Vue TypeScript workbench. Its Go binding intentionally exposes only task snapshot queries and the data directory; task commands and tool execution remain in the Core boundary. With Wails installed, build it from that directory with `wails build`.
 
 See [Docs/11-基础框架实现状态.md](Docs/11-基础框架实现状态.md) for the implementation boundary and next increments.
 

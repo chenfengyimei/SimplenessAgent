@@ -106,6 +106,12 @@
 - 模型步骤和受控 Coordinator 现在支持跨多个 cycle 串行执行依赖 DAG：前序只读 Step 完成后 Task 保持 `RUNNING`，直到没有未终态 Step 才进入 FinalReport 验证。
 - 保持每个 cycle 至多一个 Ready Step；多 Ready Step 仍 fail-closed，尚未引入并行 Agent 或共享写入。
 
+### 2026-08-11 Wails + Vue desktop workbench
+
+- 新增 `desktop/` Wails v2 + Vue TypeScript 项目，并以本地 App Service 打开同一数据目录；桌面 Binding 只提供任务快照和数据目录查询。
+- Vue 工作台展示 Task/Step/Event 事实并提供刷新，不维护独立任务状态，也不暴露 Provider 凭据、工具执行或审批操作。
+- 已通过 Vue 生产构建、桌面子模块 `go test`/`go vet` 与 Windows Wails 生产构建验证。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。
