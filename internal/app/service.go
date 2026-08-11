@@ -319,7 +319,11 @@ func (s *Service) VerifyTask(ctx context.Context, taskID string) (verifier.Final
 	if err != nil {
 		return verifier.FinalReport{}, err
 	}
-	return verifier.Verify(item, activePlan, evidence), nil
+	workspaceItem, err := s.store.GetWorkspace(ctx, item.WorkspaceID)
+	if err != nil {
+		return verifier.FinalReport{}, err
+	}
+	return verifier.VerifyInWorkspace(item, activePlan, evidence, workspaceItem.RootPath), nil
 }
 
 func (s *Service) persistFinalReport(ctx context.Context, report verifier.FinalReport) error {

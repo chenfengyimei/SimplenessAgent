@@ -3,9 +3,11 @@
 package verifier
 
 import (
+	"os"
 	"strings"
 	"time"
 
+	"github.com/xm/simplenessagent/internal/workspace"
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
 
@@ -25,9 +27,12 @@ type FinalReport struct {
 }
 
 func Verify(task contracts.Task, plan contracts.PlanVersion, evidence []contracts.Evidence) FinalReport {
+	return VerifyInWorkspace(task, plan, evidence, "")
+}
+func VerifyInWorkspace(task contracts.Task, plan contracts.PlanVersion, evidence []contracts.Evidence, root string) FinalReport {
 	report := FinalReport{Version: contracts.SchemaVersion, TaskID: task.ID, PlanID: plan.PlanID, Passed: true, GeneratedAt: time.Now().UTC()}
 	for _, criterion := range task.Spec.AcceptanceCriteria {
-		check := verifyCriterion(criterion, evidence)
+		check := verifyCriterion(criterion, evidence, root)
 		if !check.Passed {
 			report.Passed = false
 		}
@@ -39,11 +44,14 @@ func Verify(task contracts.Task, plan contracts.PlanVersion, evidence []contract
 	}
 	return report
 }
-func verifyCriterion(criterion contracts.AcceptanceCriterion, evidence []contracts.Evidence) Check {
+func verifyCriterion(criterion contracts.AcceptanceCriterion, evidence []contracts.Evidence, root string) Check {
 	check := Check{CriterionID: criterion.ID}
 	if criterion.ID == "" {
 		check.Reason = "acceptance criterion has no ID"
 		return check
+	}
+	if criterion.Type == contracts.AcceptanceFileExists {
+		return verifyFile(criterion, root, check)
 	}
 	if criterion.Type != contracts.AcceptanceEvidenceExists {
 		check.Reason = "acceptance type is not implemented by deterministic verifier"
@@ -65,5 +73,26 @@ func verifyCriterion(criterion contracts.AcceptanceCriterion, evidence []contrac
 	} else {
 		check.Reason = "no verified matching evidence exists"
 	}
+	return check
+}
+
+func verifyFile(criterion contracts.AcceptanceCriterion, root string, check Check) Check {
+	path, _ := criterion.Spec["path"].(string)
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
+		check.Reason = "file acceptance criterion requires workspace root and spec.path"
+		return check
+	}
+	target, err := workspace.ResolveWithin(root, path)
+	if err != nil {
+		check.Reason = "file path is outside the authorized workspace"
+		return check
+	}
+	info, err := os.Stat(target)
+	if err != nil || info.IsDir() {
+		check.Reason = "required workspace file does not exist"
+		return check
+	}
+	check.Passed = true
+	check.Reason = "required workspace file exists"
 	return check
 }
