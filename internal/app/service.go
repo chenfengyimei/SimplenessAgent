@@ -80,6 +80,26 @@ func (s *Service) ListTasks(ctx context.Context, workspaceID string) ([]contract
 	return s.store.ListTasks(ctx, workspaceID)
 }
 
+func (s *Service) CreateMemory(ctx context.Context, item contracts.MemoryRecord) (contracts.MemoryRecord, error) {
+	if _, err := s.store.GetWorkspace(ctx, item.WorkspaceID); err != nil {
+		return contracts.MemoryRecord{}, err
+	}
+	item.ID = task.NewID("mem")
+	item.Version = contracts.SchemaVersion
+	item.CreatedAt = time.Now().UTC()
+	if item.ValidFrom.IsZero() {
+		item.ValidFrom = item.CreatedAt
+	}
+	return s.store.SaveMemory(ctx, item)
+}
+
+func (s *Service) SearchMemory(ctx context.Context, workspaceID, query string, limit int) ([]contracts.MemoryRecord, error) {
+	if _, err := s.store.GetWorkspace(ctx, workspaceID); err != nil {
+		return nil, err
+	}
+	return s.store.SearchMemory(ctx, workspaceID, query, limit)
+}
+
 func (s *Service) CreateDeployment(ctx context.Context, item contracts.Deployment) (contracts.Deployment, error) {
 	if strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.ProviderType) == "" || strings.TrimSpace(item.Endpoint) == "" || strings.TrimSpace(item.Model) == "" {
 		return contracts.Deployment{}, contracts.NewError(contracts.ErrInvalidInput, "deployment name, provider type, endpoint and model are required")

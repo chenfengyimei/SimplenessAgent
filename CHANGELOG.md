@@ -41,6 +41,11 @@
 - 新增 `DIFF_CONTAINS` 接受条件：在授权工作区内验证指定文件的 `git diff HEAD` 是否包含期望文本。
 - diff 调用不经过 shell，禁用外部 diff 与彩色输出，并设置固定超时；非 Git 工作区、路径越界、超时和不匹配均 fail-closed。
 
+### 2026-08-11 Memory FTS foundation
+
+- 新增版本化、来源绑定的 `MemoryRecord`、SQLite 迁移和 FTS5 索引；写入要求 Workspace 作用域及至少一个 Event/Artifact 来源。
+- 新增 App Service 的记忆创建和检索入口；检索按 Workspace、ACTIVE/PINNED 状态和有效期过滤，避免归档或其他项目记忆污染当前上下文。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。

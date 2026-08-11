@@ -259,6 +259,30 @@ type ContextPackage struct {
 	CompilerVersion string           `json:"compiler_version"`
 }
 
+// MemoryRecord is an attributable, scoped derived fact. Source IDs refer to
+// immutable task events or artifacts rather than model conversation text.
+type MemoryRecord struct {
+	ID                string    `json:"memory_id"`
+	Version           int       `json:"version"`
+	Type              string    `json:"type"`
+	WorkspaceID       string    `json:"workspace_id"`
+	TaskID            string    `json:"task_id,omitempty"`
+	Title             string    `json:"title"`
+	Content           string    `json:"content"`
+	Tags              []string  `json:"tags,omitempty"`
+	SourceEventIDs    []string  `json:"source_event_ids,omitempty"`
+	SourceArtifactIDs []string  `json:"source_artifact_ids,omitempty"`
+	Confidence        float64   `json:"confidence"`
+	Importance        float64   `json:"importance"`
+	Status            string    `json:"status"`
+	ValidFrom         time.Time `json:"valid_from"`
+	ValidUntil        time.Time `json:"valid_until,omitempty"`
+	Supersedes        string    `json:"supersedes,omitempty"`
+	CreatedBy         string    `json:"created_by"`
+	ContentHash       string    `json:"content_hash"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
 type Artifact struct {
 	ID                    string    `json:"artifact_id"`
 	Version               int       `json:"version"`
