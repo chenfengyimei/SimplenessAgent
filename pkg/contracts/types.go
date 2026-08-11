@@ -300,6 +300,20 @@ type Skill struct {
 	Instructions string        `json:"instructions"`
 }
 
+// AgentReport is the immutable handoff from a bounded Worker invocation to
+// task state and verification. It records observed tool results, not a model
+// claim that task acceptance has been met.
+type AgentReport struct {
+	Version     int          `json:"version"`
+	TaskID      string       `json:"task_id"`
+	StepID      string       `json:"step_id"`
+	Summary     string       `json:"summary"`
+	ToolResults []ToolResult `json:"tool_results"`
+	Usage       TokenUsage   `json:"usage"`
+	Iterations  int          `json:"iterations"`
+	GeneratedAt time.Time    `json:"generated_at"`
+}
+
 type Artifact struct {
 	ID                    string    `json:"artifact_id"`
 	Version               int       `json:"version"`

@@ -22,6 +22,7 @@ import (
 	"github.com/xm/simplenessagent/internal/task"
 	"github.com/xm/simplenessagent/internal/tool"
 	"github.com/xm/simplenessagent/internal/verifier"
+	"github.com/xm/simplenessagent/internal/worker"
 	"github.com/xm/simplenessagent/internal/workspace"
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
@@ -614,6 +615,168 @@ func (s *Service) RunTask(ctx context.Context, taskID string) (TaskSnapshot, err
 		return TaskSnapshot{}, err
 	}
 	return snapshot, nil
+}
+
+type RunModelStepInput struct {
+	TaskID, DeploymentID string
+	ContextPackage       *contracts.ContextPackage
+	Skills               []contracts.Skill
+}
+
+// RunModelStep executes exactly one ready read-only Step through the bounded
+// Worker, then persists its report and deterministic evidence before allowing
+// normal task verification to decide completion.
+func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (TaskSnapshot, error) {
+	if s.resolveProvider == nil {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrCapabilityUnsupported, "no provider resolver is configured")
+	}
+	item, err := s.store.GetTask(ctx, input.TaskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if item.Status != contracts.TaskReady {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "model execution requires a READY task")
+	}
+	planVersion, err := s.store.GetLatestPlan(ctx, item.ID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	states, err := s.store.GetSteps(ctx, planVersion.PlanID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	statusByID := map[string]contracts.StepStatus{}
+	for _, state := range states {
+		statusByID[state.StepID] = state.Status
+	}
+	ready := plan.ReadySteps(planVersion, statusByID)
+	if len(ready) != 1 {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrPlanInvalid, "model runner requires exactly one ready step")
+	}
+	step, found := findStep(planVersion, ready[0])
+	if !found || step.Risk != contracts.RiskRead {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrToolNotAllowed, "model runner only executes read-only steps")
+	}
+	deployment, err := s.store.GetDeployment(ctx, input.DeploymentID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if !deployment.Enabled {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrPermissionDenied, "deployment is disabled")
+	}
+	provider, err := s.resolveProvider(deployment)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	workspaceItem, err := s.store.GetWorkspace(ctx, item.WorkspaceID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	registry := tool.NewRegistry()
+	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
+		return TaskSnapshot{}, err
+	}
+	contextPackage, err := modelContext(item, planVersion, step, deployment.ID, input.ContextPackage)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	executor, err := worker.New(provider, registry)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionTask(ctx, item.ID, contracts.TaskReady, contracts.TaskRunning, "TASK_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepPending, contracts.StepReady, "STEP_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepReady, contracts.StepRunning, "STEP_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if _, err = s.CheckpointTask(ctx, item.ID); err != nil {
+		return TaskSnapshot{}, err
+	}
+	result, runErr := executor.Run(ctx, worker.Input{DeploymentID: deployment.ID, Step: step, ContextPackage: &contextPackage, Skills: input.Skills})
+	if runErr != nil {
+		_ = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepRunning, contracts.StepFailed, "STEP_STATUS_CHANGED")
+		_ = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskFailed, "TASK_STATUS_CHANGED")
+		return TaskSnapshot{}, runErr
+	}
+	if err = s.persistAgentReport(ctx, item, step.StepID, result); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepRunning, contracts.StepVerifying, "STEP_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepVerifying, contracts.StepCompleted, "STEP_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskVerifying, "TASK_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	report, err := s.VerifyTask(ctx, item.ID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.persistFinalReport(ctx, report); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if !report.Passed {
+		if err = s.transitionTask(ctx, item.ID, contracts.TaskVerifying, contracts.TaskFailed, "TASK_STATUS_CHANGED"); err != nil {
+			return TaskSnapshot{}, err
+		}
+	} else if err = s.transitionTask(ctx, item.ID, contracts.TaskVerifying, contracts.TaskCompleted, "TASK_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	return s.CheckpointTask(ctx, item.ID)
+}
+
+func findStep(planVersion contracts.PlanVersion, stepID string) (contracts.StepSpec, bool) {
+	for _, step := range planVersion.Steps {
+		if step.StepID == stepID {
+			return step, true
+		}
+	}
+	return contracts.StepSpec{}, false
+}
+
+func modelContext(item contracts.Task, planVersion contracts.PlanVersion, step contracts.StepSpec, deploymentID string, supplied *contracts.ContextPackage) (contracts.ContextPackage, error) {
+	if supplied != nil {
+		return *supplied, nil
+	}
+	encoded, err := json.Marshal(map[string]interface{}{"task_id": item.ID, "goal": item.Goal, "constraints": item.Spec.Constraints, "plan_id": planVersion.PlanID, "step_id": step.StepID, "step_goal": step.Goal})
+	if err != nil {
+		return contracts.ContextPackage{}, err
+	}
+	limit := step.Budget.MaxInputTokens
+	if limit <= 0 {
+		limit = 8192
+	}
+	compiled, err := contextpack.Compile(contextpack.Input{DeploymentID: deploymentID, Role: "EXECUTOR", TaskID: item.ID, StepID: step.StepID, BudgetLimit: limit, Sections: []contracts.ContextSection{{Type: "TASK_STEP", Content: string(encoded), SourceRefs: []string{item.ID, planVersion.PlanID, step.StepID}, Priority: 100}}})
+	if err != nil {
+		return contracts.ContextPackage{}, err
+	}
+	return compiled.Package, nil
+}
+
+func (s *Service) persistAgentReport(ctx context.Context, item contracts.Task, stepID string, result worker.Result) error {
+	report := contracts.AgentReport{Version: contracts.SchemaVersion, TaskID: item.ID, StepID: stepID, Summary: result.Text, ToolResults: result.ToolResults, Usage: result.Usage, Iterations: result.Iterations, GeneratedAt: time.Now().UTC()}
+	encoded, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	artifactItem, err := s.artifactStore.Put("AGENT_REPORT", "application/json", "bounded model worker report", item.ID, stepID, encoded)
+	if err != nil {
+		return err
+	}
+	if err = s.store.SaveArtifact(ctx, artifactItem); err != nil {
+		return err
+	}
+	evidence := contracts.Evidence{ID: task.NewID("evd"), Kind: "AGENT_REPORT", Claim: "bounded model worker report persisted", ArtifactID: artifactItem.ID, Location: "$", VerificationMethod: "WORKER_RESULT", VerifiedAt: time.Now().UTC(), Confidence: 1}
+	if err = s.store.SaveEvidence(ctx, evidence); err != nil {
+		return err
+	}
+	return s.store.AttachStepResults(ctx, stepID, []string{artifactItem.ID}, []string{evidence.ID})
 }
 
 // CheckpointTask saves the latest materialized task state once per event

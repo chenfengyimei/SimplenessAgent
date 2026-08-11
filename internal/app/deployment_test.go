@@ -202,6 +202,49 @@ func TestReplanPausedTaskPersistsLocalRevision(t *testing.T) {
 	}
 }
 
+func TestRunModelStepPersistsAgentReportAndVerifiesTask(t *testing.T) {
+	ctx := context.Background()
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) {
+		return mock.Provider{Response: "inspected workspace"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "agent", Goal: "inspect", AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "agent-report", Type: contracts.AcceptanceEvidenceExists, Description: "agent report", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := contracts.StepSpec{Version: contracts.SchemaVersion, StepID: "agent-step", Title: "Inspect", Goal: "inspect workspace", AllowedTools: []string{"list_files"}, WorkspaceScopes: []string{"."}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "agent-report", Type: contracts.AcceptanceEvidenceExists, Description: "agent report", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: contracts.RiskRead, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 1, MaxDurationMS: 1000, MaxInputTokens: 1000, MaxOutputTokens: 1000}, ExecutionMode: "AGENT"}
+	planVersion := contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: "agent-plan", TaskID: created.ID, Revision: 2, ParentPlanID: "initial", Reason: "TEST", Summary: "agent", Steps: []contracts.StepSpec{step}, CreatedByAgent: "test", CreatedAt: time.Now().UTC()}
+	event, err := service.newEvent(ctx, created.ID, "PLAN_CREATED", map[string]interface{}{"plan_id": planVersion.PlanID, "revision": planVersion.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.store.CreatePlan(ctx, planVersion, event); err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.RunModelStep(ctx, RunModelStepInput{TaskID: created.ID, DeploymentID: deployment.ID})
+	if err != nil || snapshot.Task.Status != contracts.TaskCompleted || len(snapshot.Steps) != 1 || len(snapshot.Steps[0].EvidenceIDs) != 1 {
+		t.Fatal(snapshot, err)
+	}
+	found := false
+	for _, event := range snapshot.Events {
+		found = found || event.EventType == "TASK_STATUS_CHANGED"
+	}
+	if !found {
+		t.Fatal("model execution state changes were not audited")
+	}
+}
+
 func contentHash(value []byte) string {
 	digest := sha256.Sum256(value)
 	return "sha256:" + hex.EncodeToString(digest[:])

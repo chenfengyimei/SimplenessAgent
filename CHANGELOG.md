@@ -61,6 +61,11 @@
 - Worker 现可渲染显式选中的 Skill 指令；Skill 必须绑定已有 Context Package，指令 Token 计入其剩余预算。
 - Worker 在 Provider 调用前拒绝重复/不完整 Skill、超出 Step 工具白名单或 Scope 的声明，以及超预算的 Skill；Skill 不会改变实际 Tool 调用白名单。
 
+### 2026-08-11 Model step execution closure
+
+- 新增 App Service `RunModelStep`：为唯一就绪的 `READ` Step 创建受预算上下文、调用受控 Worker、持久化 `AGENT_REPORT` Artifact 与 Evidence 后才进入任务验证。
+- 该入口复用 Task/Step 状态机、Checkpoint 和 FinalReport；Worker 失败会将运行中的 Step/Task 标记失败，写工具仍不会注册到模型执行环境。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。
