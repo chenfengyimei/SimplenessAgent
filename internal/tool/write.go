@@ -1,0 +1,96 @@
+package tool
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/xm/simplenessagent/internal/task"
+	"github.com/xm/simplenessagent/internal/workspace"
+	"github.com/xm/simplenessagent/pkg/contracts"
+)
+
+// RegisterApprovedWriteFile is intentionally opt-in. The approval callback must
+// record/consume a parameter-bound ticket before this handler writes anything.
+func RegisterApprovedWriteFile(registry *Registry, root string, approve func(map[string]interface{}) error) error {
+	if approve == nil {
+		return contracts.NewError(contracts.ErrInvalidInput, "write approval callback is required")
+	}
+	definition := contracts.ToolDefinition{Version: contracts.SchemaVersion, Name: "write_file", ToolVersion: "1.0.0", Description: "Write a UTF-8 file after parameter-bound approval.", ParametersSchema: objectSchema(map[string]interface{}{"path": stringSchema(), "content": stringSchema(), "expected_content_hash": stringSchema()}, []string{"path", "content", "expected_content_hash"}), RiskClass: contracts.RiskWrite, RequiredCapabilities: []string{"fs.write"}, SupportsCancel: false}
+	return registry.Register(definition, func(ctx context.Context, args map[string]interface{}) (contracts.ToolResult, error) {
+		started := time.Now().UTC()
+		path, content, expected, err := writeArguments(args)
+		if err != nil {
+			return failed(started, err), nil
+		}
+		target, err := workspace.ResolveWithin(root, path)
+		if err != nil {
+			return failed(started, err), nil
+		}
+		if err = checkExpectedContent(target, expected); err != nil {
+			return failed(started, err), nil
+		}
+		if err = ctx.Err(); err != nil {
+			return failed(started, err), nil
+		}
+		if err = approve(args); err != nil {
+			return failed(started, err), nil
+		}
+		if err = writeChecked(target, []byte(content), expected); err != nil {
+			return failed(started, err), nil
+		}
+		return contracts.ToolResult{Version: contracts.SchemaVersion, ToolCallID: task.NewID("tcall"), Status: "SUCCEEDED", Summary: "file written", Data: map[string]interface{}{"path": path, "content_hash": hash([]byte(content))}, StartedAt: started, CompletedAt: time.Now().UTC()}, nil
+	})
+}
+
+func writeArguments(args map[string]interface{}) (string, string, string, error) {
+	path, pathOK := args["path"].(string)
+	content, contentOK := args["content"].(string)
+	expected, expectedOK := args["expected_content_hash"].(string)
+	if !pathOK || !contentOK || !expectedOK || path == "" || expected == "" {
+		return "", "", "", contracts.NewError(contracts.ErrInvalidInput, "path, content and expected_content_hash are required strings")
+	}
+	return path, content, expected, nil
+}
+
+func writeChecked(target string, content []byte, expected string) error {
+	if err := checkExpectedContent(target, expected); err != nil {
+		return err
+	}
+	parent := filepath.Dir(target)
+	temp, err := os.CreateTemp(parent, ".simpleness-write-*")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	defer os.Remove(name)
+	if _, err = temp.Write(content); err == nil {
+		err = temp.Sync()
+	}
+	if closeErr := temp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(name, target)
+}
+
+func checkExpectedContent(target, expected string) error {
+	current, err := os.ReadFile(target)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	actual := hash(current)
+	if expected != actual {
+		return contracts.NewError(contracts.ErrSideEffectUnknown, "expected content hash does not match current file")
+	}
+	return nil
+}
+func hash(value []byte) string {
+	digest := sha256.Sum256(value)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}

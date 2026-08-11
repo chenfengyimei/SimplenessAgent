@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 2026-08-11 Approved file writer
+
+- 新增显式注册的 `write_file` 执行器：参数、工作区边界和预期内容哈希均通过校验后，才会调用参数绑定的审批回调。
+- 写入采用同目录临时文件、同步落盘和原子替换；内容哈希不匹配、审批拒绝或路径越界时均不产生文件修改。
+- 该工具默认不注册到 Worker；后续增量将把持久化 Intent/Approval 票据接入审批回调。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。
