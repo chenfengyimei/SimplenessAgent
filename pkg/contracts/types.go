@@ -283,6 +283,23 @@ type MemoryRecord struct {
 	CreatedAt         time.Time `json:"created_at"`
 }
 
+// SkillManifest declares a reusable, workspace-local instruction package.
+// It is metadata only: instructions are loaded separately on explicit demand.
+type SkillManifest struct {
+	Version         int      `json:"version"`
+	Name            string   `json:"name"`
+	SkillVersion    string   `json:"skill_version"`
+	Description     string   `json:"description"`
+	AllowedTools    []string `json:"allowed_tools"`
+	WorkspaceScopes []string `json:"workspace_scopes"`
+	Locked          bool     `json:"locked"`
+}
+
+type Skill struct {
+	Manifest     SkillManifest `json:"manifest"`
+	Instructions string        `json:"instructions"`
+}
+
 type Artifact struct {
 	ID                    string    `json:"artifact_id"`
 	Version               int       `json:"version"`

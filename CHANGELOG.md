@@ -51,6 +51,11 @@
 - 新增显式 `CompileMemoryContext`：仅检索当前 Task 所属 Workspace 的可用记忆，再交给 Context Package 编译器统一执行 Token 预算和来源多样性裁剪。
 - 编译结果保留 `memory:<id>`、源 Event 和源 Artifact 引用，并以置信度与重要性确定段落优先级。
 
+### 2026-08-11 Local Skill runtime foundation
+
+- 新增版本化本地 Skill manifest 与按需 `SKILL.md` 加载；发现操作只读取元数据，避免未选中 Skill 正文进入上下文。
+- Manifest 必须声明可用工具和工作区 Scope，未知工具、路径越界、符号链接、超大或多 JSON 文档均被拒绝；当前 App 仅提供只读工具表。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。

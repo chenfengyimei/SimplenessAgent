@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -38,5 +39,37 @@ func TestCreateAndSearchMemory(t *testing.T) {
 	section := compiled.Package.Sections[0]
 	if section.Type != "MEMORY_CONSTRAINT" || section.SourceRefs[0] != "evt_user" && section.SourceRefs[0] != "memory:"+created.ID {
 		t.Fatal(section)
+	}
+}
+
+func TestListAndLoadWorkspaceSkill(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	directory := filepath.Join(root, ".simpleness", "skills", "review")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "skill.json"), []byte(`{"version":1,"name":"review","skill_version":"1.0.0","description":"Review","allowed_tools":["read_file"],"workspace_scopes":["."]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "SKILL.md"), []byte("# Review"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := service.ListSkills(ctx, workspace.ID)
+	if err != nil || len(items) != 1 || items[0].Name != "review" {
+		t.Fatal(items, err)
+	}
+	loaded, err := service.LoadSkill(ctx, workspace.ID, "review")
+	if err != nil || loaded.Instructions != "# Review" {
+		t.Fatal(loaded, err)
 	}
 }

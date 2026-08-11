@@ -17,6 +17,7 @@ import (
 	"github.com/xm/simplenessagent/internal/plan"
 	"github.com/xm/simplenessagent/internal/planner"
 	"github.com/xm/simplenessagent/internal/policy"
+	"github.com/xm/simplenessagent/internal/skill"
 	"github.com/xm/simplenessagent/internal/storage"
 	"github.com/xm/simplenessagent/internal/task"
 	"github.com/xm/simplenessagent/internal/tool"
@@ -125,6 +126,32 @@ func (s *Service) CompileMemoryContext(ctx context.Context, input MemoryContextI
 		sections = append(sections, contracts.ContextSection{Type: "MEMORY_" + memory.Type, Content: memory.Title + "\n" + memory.Content, SourceRefs: sources, Priority: priority})
 	}
 	return contextpack.Compile(contextpack.Input{DeploymentID: input.DeploymentID, Role: input.Role, TaskID: input.TaskID, StepID: input.StepID, BudgetLimit: input.BudgetLimit, ReservedTokens: input.ReservedTokens, Sections: sections})
+}
+
+// ListSkills exposes only validated manifests. Skill instruction bodies remain
+// out of context until LoadSkill is explicitly requested.
+func (s *Service) ListSkills(ctx context.Context, workspaceID string) ([]contracts.SkillManifest, error) {
+	workspaceItem, err := s.store.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	registry := tool.NewRegistry()
+	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
+		return nil, err
+	}
+	return skill.Discover(workspaceItem.RootPath, registry.Definitions())
+}
+
+func (s *Service) LoadSkill(ctx context.Context, workspaceID, name string) (contracts.Skill, error) {
+	workspaceItem, err := s.store.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return contracts.Skill{}, err
+	}
+	registry := tool.NewRegistry()
+	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
+		return contracts.Skill{}, err
+	}
+	return skill.Load(workspaceItem.RootPath, name, registry.Definitions())
 }
 
 func (s *Service) CreateDeployment(ctx context.Context, item contracts.Deployment) (contracts.Deployment, error) {
