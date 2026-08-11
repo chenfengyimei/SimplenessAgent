@@ -101,6 +101,11 @@
 - `task create` 新增显式 `--allow-subagents`；默认仍关闭单层子 Agent。
 - 新增 `task coordinate --deployment` 与 `task agents`，以 JSON 暴露既有受控 Coordinator 调度和 Assignment 查询。
 
+### 2026-08-11 Sequential DAG coordinator cycles
+
+- 模型步骤和受控 Coordinator 现在支持跨多个 cycle 串行执行依赖 DAG：前序只读 Step 完成后 Task 保持 `RUNNING`，直到没有未终态 Step 才进入 FinalReport 验证。
+- 保持每个 cycle 至多一个 Ready Step；多 Ready Step 仍 fail-closed，尚未引入并行 Agent 或共享写入。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。

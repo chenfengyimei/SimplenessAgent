@@ -375,6 +375,49 @@ func TestRunCoordinatorCycleCreatesAndRunsOneAssignment(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRunsDependentReadOnlyStepsAcrossCycles(t *testing.T) {
+	ctx := context.Background()
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) {
+		return mock.Provider{Response: "inspected"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "two steps", Goal: "inspect", AllowSubagents: true, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "report", Type: contracts.AcceptanceEvidenceExists, Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	criterion := []contracts.AcceptanceCriterion{{ID: "report", Type: contracts.AcceptanceEvidenceExists, Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}
+	first := contracts.StepSpec{Version: contracts.SchemaVersion, StepID: "first", Title: "First", Goal: "first", AllowedTools: []string{"list_files"}, WorkspaceScopes: []string{"."}, AcceptanceCriteria: criterion, Risk: contracts.RiskRead, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 1, MaxDurationMS: 1000, MaxInputTokens: 1000, MaxOutputTokens: 1000}, PreferredRole: "RECON"}
+	second := first
+	second.StepID, second.Title, second.Dependencies = "second", "Second", []string{"first"}
+	planVersion := contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: "two-step-plan", TaskID: created.ID, Revision: 2, ParentPlanID: "initial", Reason: "TEST", Summary: "two", Steps: []contracts.StepSpec{first, second}, CreatedAt: time.Now().UTC()}
+	event, err := service.newEvent(ctx, created.ID, "PLAN_CREATED", map[string]interface{}{"plan_id": planVersion.PlanID, "revision": planVersion.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.store.CreatePlan(ctx, planVersion, event); err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSnapshot, err := service.RunCoordinatorCycle(ctx, CoordinatorCycleInput{TaskID: created.ID, DeploymentID: deployment.ID})
+	if err != nil || firstSnapshot.Task.Status != contracts.TaskRunning {
+		t.Fatal(firstSnapshot, err)
+	}
+	finalSnapshot, err := service.RunCoordinatorCycle(ctx, CoordinatorCycleInput{TaskID: created.ID, DeploymentID: deployment.ID})
+	if err != nil || finalSnapshot.Task.Status != contracts.TaskCompleted {
+		t.Fatal(finalSnapshot, err)
+	}
+}
+
 func TestRecoverRunningAgentAssignmentsFailsAgentAndPausesTask(t *testing.T) {
 	ctx := context.Background()
 	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data")})

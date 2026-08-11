@@ -646,7 +646,7 @@ func (s *Service) AssignReadOnlyAgent(ctx context.Context, input AssignAgentInpu
 	if err != nil {
 		return contracts.AgentAssignment{}, err
 	}
-	if item.Status != contracts.TaskReady || !item.Spec.AllowSubagents {
+	if (item.Status != contracts.TaskReady && item.Status != contracts.TaskRunning) || !item.Spec.AllowSubagents {
 		return contracts.AgentAssignment{}, contracts.NewError(contracts.ErrPermissionDenied, "task is not eligible for subagent assignment")
 	}
 	deployment, err := s.store.GetDeployment(ctx, input.DeploymentID)
@@ -747,8 +747,8 @@ func (s *Service) RunCoordinatorCycle(ctx context.Context, input CoordinatorCycl
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
-	if item.Status != contracts.TaskReady || !item.Spec.AllowSubagents {
-		return TaskSnapshot{}, contracts.NewError(contracts.ErrPermissionDenied, "coordinator requires a READY task with subagents enabled")
+	if (item.Status != contracts.TaskReady && item.Status != contracts.TaskRunning) || !item.Spec.AllowSubagents {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrPermissionDenied, "coordinator requires a READY or RUNNING task with subagents enabled")
 	}
 	planVersion, err := s.store.GetLatestPlan(ctx, item.ID)
 	if err != nil {
@@ -858,8 +858,8 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
-	if item.Status != contracts.TaskReady {
-		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "model execution requires a READY task")
+	if item.Status != contracts.TaskReady && item.Status != contracts.TaskRunning {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "model execution requires a READY or RUNNING task")
 	}
 	planVersion, err := s.store.GetLatestPlan(ctx, item.ID)
 	if err != nil {
@@ -908,11 +908,15 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
-	if err = s.transitionTask(ctx, item.ID, contracts.TaskReady, contracts.TaskRunning, "TASK_STATUS_CHANGED"); err != nil {
-		return TaskSnapshot{}, err
+	if item.Status == contracts.TaskReady {
+		if err = s.transitionTask(ctx, item.ID, contracts.TaskReady, contracts.TaskRunning, "TASK_STATUS_CHANGED"); err != nil {
+			return TaskSnapshot{}, err
+		}
 	}
-	if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepPending, contracts.StepReady, "STEP_STATUS_CHANGED"); err != nil {
-		return TaskSnapshot{}, err
+	if statusByID[step.StepID] == contracts.StepPending {
+		if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepPending, contracts.StepReady, "STEP_STATUS_CHANGED"); err != nil {
+			return TaskSnapshot{}, err
+		}
 	}
 	if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepReady, contracts.StepRunning, "STEP_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
@@ -934,6 +938,15 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	}
 	if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepVerifying, contracts.StepCompleted, "STEP_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
+	}
+	updatedSteps, err := s.store.GetSteps(ctx, planVersion.PlanID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	for _, updated := range updatedSteps {
+		if !updated.Status.Terminal() {
+			return s.CheckpointTask(ctx, item.ID)
+		}
 	}
 	if err = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskVerifying, "TASK_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
