@@ -45,5 +45,9 @@
 
 - App Service 现可通过已启用 Deployment 生成并审计持久化模型 Plan Revision。
 
+### 2026-08-11 Verifier
+
+- 新增 Evidence 驱动的确定性验证器和 FinalReport，任务完成前强制验证接收条件。
+
 [Unreleased]: https://github.com/chenfengyimei/SimplenessAgent/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/chenfengyimei/SimplenessAgent/releases/tag/v0.1.0

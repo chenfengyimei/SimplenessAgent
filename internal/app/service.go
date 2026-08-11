@@ -18,6 +18,7 @@ import (
 	"github.com/xm/simplenessagent/internal/storage"
 	"github.com/xm/simplenessagent/internal/task"
 	"github.com/xm/simplenessagent/internal/tool"
+	"github.com/xm/simplenessagent/internal/verifier"
 	"github.com/xm/simplenessagent/internal/workspace"
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
@@ -279,6 +280,14 @@ func (s *Service) RunTask(ctx context.Context, taskID string) (TaskSnapshot, err
 	if err = s.transitionTask(ctx, taskID, contracts.TaskRunning, contracts.TaskVerifying, "TASK_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
 	}
+	report, err := s.VerifyTask(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if !report.Passed {
+		_ = s.transitionTask(ctx, taskID, contracts.TaskVerifying, contracts.TaskFailed, "TASK_STATUS_CHANGED")
+		return s.GetTaskSnapshot(ctx, taskID)
+	}
 	if err = s.transitionTask(ctx, taskID, contracts.TaskVerifying, contracts.TaskCompleted, "TASK_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
 	}
@@ -292,6 +301,22 @@ func (s *Service) RunTask(ctx context.Context, taskID string) (TaskSnapshot, err
 		}
 	}
 	return snapshot, nil
+}
+
+func (s *Service) VerifyTask(ctx context.Context, taskID string) (verifier.FinalReport, error) {
+	item, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return verifier.FinalReport{}, err
+	}
+	activePlan, err := s.store.GetLatestPlan(ctx, taskID)
+	if err != nil {
+		return verifier.FinalReport{}, err
+	}
+	evidence, err := s.store.ListTaskEvidence(ctx, taskID)
+	if err != nil {
+		return verifier.FinalReport{}, err
+	}
+	return verifier.Verify(item, activePlan, evidence), nil
 }
 
 func (s *Service) runReconnaissance(ctx context.Context, item contracts.Task, stepID string) error {
