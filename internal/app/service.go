@@ -284,6 +284,9 @@ func (s *Service) RunTask(ctx context.Context, taskID string) (TaskSnapshot, err
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
+	if err = s.persistFinalReport(ctx, report); err != nil {
+		return TaskSnapshot{}, err
+	}
 	if !report.Passed {
 		_ = s.transitionTask(ctx, taskID, contracts.TaskVerifying, contracts.TaskFailed, "TASK_STATUS_CHANGED")
 		return s.GetTaskSnapshot(ctx, taskID)
@@ -317,6 +320,18 @@ func (s *Service) VerifyTask(ctx context.Context, taskID string) (verifier.Final
 		return verifier.FinalReport{}, err
 	}
 	return verifier.Verify(item, activePlan, evidence), nil
+}
+
+func (s *Service) persistFinalReport(ctx context.Context, report verifier.FinalReport) error {
+	encoded, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	item, err := s.artifactStore.Put("FINAL_REPORT", "application/json", "deterministic task verification report", report.TaskID, "", encoded)
+	if err != nil {
+		return err
+	}
+	return s.store.SaveArtifact(ctx, item)
 }
 
 func (s *Service) runReconnaissance(ctx context.Context, item contracts.Task, stepID string) error {
