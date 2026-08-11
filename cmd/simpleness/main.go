@@ -143,7 +143,7 @@ func workspaceCommand(ctx context.Context, service *app.Service, args []string) 
 
 func taskCommand(ctx context.Context, service *app.Service, args []string) error {
 	if len(args) == 0 {
-		return errors.New("task command is required: create | list | show | plan | run | run-model | events")
+		return errors.New("task command is required: create | list | show | plan | run | run-model | coordinate | agents | events")
 	}
 	switch args[0] {
 	case "create":
@@ -151,10 +151,11 @@ func taskCommand(ctx context.Context, service *app.Service, args []string) error
 		workspaceID := flags.String("workspace", "", "workspace identifier")
 		title := flags.String("title", "", "task title")
 		goal := flags.String("goal", "", "task goal")
+		allowSubagents := flags.Bool("allow-subagents", false, "allow bounded single-layer read-only subagents")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
-		item, plan, err := service.CreateTask(ctx, app.CreateTaskInput{WorkspaceID: *workspaceID, Title: *title, Goal: *goal})
+		item, plan, err := service.CreateTask(ctx, app.CreateTaskInput{WorkspaceID: *workspaceID, Title: *title, Goal: *goal, AllowSubagents: *allowSubagents})
 		if err != nil {
 			return err
 		}
@@ -225,8 +226,32 @@ func taskCommand(ctx context.Context, service *app.Service, args []string) error
 			return err
 		}
 		return printJSON(snapshot)
+	case "coordinate":
+		flags := flag.NewFlagSet("task coordinate", flag.ContinueOnError)
+		deploymentID := flags.String("deployment", "", "enabled deployment identifier")
+		role := flags.String("role", "", "optional Agent role; defaults to the step preferred role")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 1 || strings.TrimSpace(*deploymentID) == "" {
+			return errors.New("usage: simpleness task coordinate --deployment <deployment-id> [--role ROLE] <task-id>")
+		}
+		snapshot, err := service.RunCoordinatorCycle(ctx, app.CoordinatorCycleInput{TaskID: flags.Arg(0), DeploymentID: *deploymentID, Role: *role})
+		if err != nil {
+			return err
+		}
+		return printJSON(snapshot)
+	case "agents":
+		if len(args) != 2 {
+			return errors.New("usage: simpleness task agents <task-id>")
+		}
+		items, err := service.ListAgentAssignments(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		return printJSON(items)
 	default:
-		return errors.New("task command is required: create | list | show | plan | run | run-model | events")
+		return errors.New("task command is required: create | list | show | plan | run | run-model | coordinate | agents | events")
 	}
 }
 

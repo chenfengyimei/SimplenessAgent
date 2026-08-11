@@ -36,6 +36,14 @@ go run ./cmd/simpleness -- --data-dir .\data task run-model --deployment <deploy
 
 数据库只保存可选的凭据引用，不保存 API Key。
 
+若要使用受控单层子 Agent，创建任务时必须显式启用它；随后 Coordinator 只会运行唯一就绪的只读 Step：
+
+```powershell
+go run ./cmd/simpleness -- --data-dir .\data task create --workspace <workspace-id> --title 'Inspect project' --goal 'Create a verified report' --allow-subagents
+go run ./cmd/simpleness -- --data-dir .\data task coordinate --deployment <deployment-id> <task-id>
+go run ./cmd/simpleness -- --data-dir .\data task agents <task-id>
+```
+
 ## 当前已实现
 
 - 版本化领域契约与 SQLite/WAL 迁移。
@@ -96,5 +104,13 @@ For an OpenAI-compatible model workflow, set `SIMPLENESS_API_KEY` only in the cu
 ```
 
 The database stores only an optional credential reference, never the API key.
+
+To use a bounded single-layer subagent, opt in when creating the task. The Coordinator then runs only one ready read-only Step:
+
+```powershell
+& 'C:\Program Files\Go\bin\go.exe' run ./cmd/simpleness -- --data-dir .\data task create --workspace <workspace-id> --title 'Inspect project' --goal 'Create a verified report' --allow-subagents
+& 'C:\Program Files\Go\bin\go.exe' run ./cmd/simpleness -- --data-dir .\data task coordinate --deployment <deployment-id> <task-id>
+& 'C:\Program Files\Go\bin\go.exe' run ./cmd/simpleness -- --data-dir .\data task agents <task-id>
+```
 
 All command output is JSON so a future desktop client, integration tests and automation can consume the same views.

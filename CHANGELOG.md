@@ -96,6 +96,11 @@
 - 新增 `RecoverRunningAgentAssignments`：遗留 `RUNNING` Assignment 先以 `AGENT_RECOVERY_FAILED` 事件持久化为失败，再复用 Task Checkpoint/暂停恢复路径。
 - 恢复不会重放模型、工具或 Handoff；没有运行中 Assignment 的 Task 也不会被此入口隐式改变。
 
+### 2026-08-11 Coordinator CLI controls
+
+- `task create` 新增显式 `--allow-subagents`；默认仍关闭单层子 Agent。
+- 新增 `task coordinate --deployment` 与 `task agents`，以 JSON 暴露既有受控 Coordinator 调度和 Assignment 查询。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。
