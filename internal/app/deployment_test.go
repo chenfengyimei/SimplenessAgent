@@ -344,6 +344,37 @@ func TestRunAssignedAgentPersistsHandoffAndStatus(t *testing.T) {
 	}
 }
 
+func TestRunCoordinatorCycleCreatesAndRunsOneAssignment(t *testing.T) {
+	ctx := context.Background()
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) {
+		return mock.Provider{Response: "inspected"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "coordinate", Goal: "inspect", AllowSubagents: true, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "agent-report", Type: contracts.AcceptanceEvidenceExists, Description: "report", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.RunCoordinatorCycle(ctx, CoordinatorCycleInput{TaskID: created.ID, DeploymentID: deployment.ID})
+	if err != nil || snapshot.Task.Status != contracts.TaskCompleted {
+		t.Fatal(snapshot, err)
+	}
+	assignments, err := service.ListAgentAssignments(ctx, created.ID)
+	if err != nil || len(assignments) != 1 || assignments[0].Role != "RECON" || assignments[0].Status != contracts.AgentSucceeded {
+		t.Fatal(assignments, err)
+	}
+}
+
 func contentHash(value []byte) string {
 	digest := sha256.Sum256(value)
 	return "sha256:" + hex.EncodeToString(digest[:])

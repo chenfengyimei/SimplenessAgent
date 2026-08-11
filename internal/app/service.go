@@ -706,6 +706,14 @@ func (s *Service) RunAssignedAgent(ctx context.Context, agentID string) (TaskSna
 	if agent.Depth != 1 || agent.Status != contracts.AgentPending {
 		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "only pending depth-one assignments can run")
 	}
+	planVersion, err := s.store.GetLatestPlan(ctx, agent.TaskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	step, found := findStep(planVersion, agent.StepID)
+	if !found || step.Risk != contracts.RiskRead || !sameStringSet(step.AllowedTools, agent.AllowedTools) || !sameStringSet(step.WorkspaceScopes, agent.WorkspaceScopes) {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrPlanInvalid, "assignment capability snapshot no longer matches the active read-only step")
+	}
 	if err = s.transitionAgent(ctx, agent, contracts.AgentPending, contracts.AgentRunning, "AGENT_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
 	}
@@ -722,6 +730,89 @@ func (s *Service) RunAssignedAgent(ctx context.Context, agentID string) (TaskSna
 		return TaskSnapshot{}, err
 	}
 	return s.CheckpointTask(ctx, agent.TaskID)
+}
+
+type CoordinatorCycleInput struct {
+	TaskID, DeploymentID, Role string
+}
+
+// RunCoordinatorCycle is a deliberately narrow coordinator: it schedules at
+// most one dependency-ready read-only step, reuses a pending assignment when
+// present, and synchronously waits for its structured handoff.
+func (s *Service) RunCoordinatorCycle(ctx context.Context, input CoordinatorCycleInput) (TaskSnapshot, error) {
+	if strings.TrimSpace(input.TaskID) == "" || strings.TrimSpace(input.DeploymentID) == "" {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidInput, "task_id and deployment_id are required")
+	}
+	item, err := s.store.GetTask(ctx, input.TaskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if item.Status != contracts.TaskReady || !item.Spec.AllowSubagents {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrPermissionDenied, "coordinator requires a READY task with subagents enabled")
+	}
+	planVersion, err := s.store.GetLatestPlan(ctx, item.ID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	states, err := s.store.GetSteps(ctx, planVersion.PlanID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	statusByID := map[string]contracts.StepStatus{}
+	for _, state := range states {
+		statusByID[state.StepID] = state.Status
+	}
+	ready := plan.ReadySteps(planVersion, statusByID)
+	if len(ready) != 1 {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrPlanInvalid, "bounded coordinator requires exactly one ready step")
+	}
+	step, found := findStep(planVersion, ready[0])
+	if !found || step.Risk != contracts.RiskRead {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrToolNotAllowed, "bounded coordinator only schedules read-only steps")
+	}
+	assignments, err := s.store.ListAgentAssignments(ctx, item.ID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	for _, assignment := range assignments {
+		if assignment.StepID != step.StepID {
+			continue
+		}
+		if assignment.Status == contracts.AgentPending {
+			return s.RunAssignedAgent(ctx, assignment.ID)
+		}
+		if assignment.Status == contracts.AgentRunning {
+			return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "assigned agent requires explicit recovery before another cycle")
+		}
+	}
+	role := strings.TrimSpace(input.Role)
+	if role == "" {
+		role = step.PreferredRole
+	}
+	if role == "" {
+		role = "EXECUTOR"
+	}
+	agent, err := s.AssignReadOnlyAgent(ctx, AssignAgentInput{TaskID: item.ID, StepID: step.StepID, DeploymentID: input.DeploymentID, Role: role})
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	return s.RunAssignedAgent(ctx, agent.ID)
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	items := map[string]bool{}
+	for _, value := range left {
+		items[value] = true
+	}
+	for _, value := range right {
+		if !items[value] {
+			return false
+		}
+	}
+	return len(items) == len(right)
 }
 
 func (s *Service) transitionAgent(ctx context.Context, agent contracts.AgentAssignment, from, to contracts.AgentStatus, eventType string) error {

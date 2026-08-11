@@ -86,6 +86,11 @@
 - 新增 `RunAssignedAgent`：仅可运行深度 1 的 `PENDING` Assignment，复用既有受控只读模型步骤，分别记录 Agent 运行/完成或失败状态事件。
 - 成功执行后持久化仅含 Artifact/Evidence 引用的 `AGENT_HANDOFF`；新增任务 Artifact 查询接口，供后续 Coordinator 与 UI 读取交接事实，而非读取隐藏推理或自由聊天记录。
 
+### 2026-08-11 Bounded coordinator cycle
+
+- 新增 `RunCoordinatorCycle`：只为显式允许子 Agent 的 `READY` Task 调度唯一依赖就绪的 `READ` Step；优先复用其 `PENDING` Assignment，再同步等待执行和 Handoff。
+- Coordinator 拒绝多个就绪步骤、运行中 Assignment、非只读 Step 与 Assignment/当前 Plan 权限快照不一致的情况，保持单层、非递归和 fail-closed。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。
