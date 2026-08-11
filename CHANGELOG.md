@@ -39,5 +39,9 @@
 
 - 新增只读模型 Planner：Plan JSON 候选解析、本地身份字段覆盖、DAG/预算/工具策略验证及 Golden Cases。
 
+### 2026-08-11 Deployments
+
+- 新增 Deployment、CapabilitySnapshot 迁移、持久化与 App Service 探测入口。
+
 [Unreleased]: https://github.com/chenfengyimei/SimplenessAgent/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/chenfengyimei/SimplenessAgent/releases/tag/v0.1.0

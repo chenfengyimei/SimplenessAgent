@@ -113,6 +113,27 @@ type Workspace struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// Deployment describes a configured model endpoint. CredentialRef is an opaque
+// reference owned by a credential store; the secret itself is never persisted.
+type Deployment struct {
+	ID                   string    `json:"deployment_id"`
+	Version              int       `json:"version"`
+	Name                 string    `json:"name"`
+	ProviderType         string    `json:"provider_type"`
+	Location             string    `json:"location"`
+	Endpoint             string    `json:"endpoint"`
+	CredentialRef        string    `json:"credential_ref,omitempty"`
+	Model                string    `json:"model"`
+	Runtime              string    `json:"runtime,omitempty"`
+	RuntimeVersion       string    `json:"runtime_version,omitempty"`
+	Quantization         string    `json:"quantization,omitempty"`
+	ModelProfileID       string    `json:"model_profile_id,omitempty"`
+	CapabilitySnapshotID string    `json:"capability_snapshot_id,omitempty"`
+	Enabled              bool      `json:"enabled"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
 type Task struct {
 	ID          string     `json:"id"`
 	Version     int        `json:"version"`

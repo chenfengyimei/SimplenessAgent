@@ -22,12 +22,16 @@ import (
 )
 
 type Service struct {
-	store         *storage.Store
-	artifactStore *artifact.Store
-	dataDir       string
+	store           *storage.Store
+	artifactStore   *artifact.Store
+	dataDir         string
+	resolveProvider func(contracts.Deployment) (contracts.ChatProvider, error)
 }
 
-type Config struct{ DataDir string }
+type Config struct {
+	DataDir         string
+	ResolveProvider func(contracts.Deployment) (contracts.ChatProvider, error)
+}
 
 func Open(ctx context.Context, config Config) (*Service, error) {
 	if strings.TrimSpace(config.DataDir) == "" {
@@ -45,7 +49,7 @@ func Open(ctx context.Context, config Config) (*Service, error) {
 		_ = store.Close()
 		return nil, err
 	}
-	return &Service{store: store, artifactStore: artifactStore, dataDir: config.DataDir}, nil
+	return &Service{store: store, artifactStore: artifactStore, dataDir: config.DataDir, resolveProvider: config.ResolveProvider}, nil
 }
 
 func (s *Service) Close() error    { return s.store.Close() }
@@ -71,6 +75,46 @@ func (s *Service) ListWorkspaces(ctx context.Context) ([]contracts.Workspace, er
 }
 func (s *Service) ListTasks(ctx context.Context, workspaceID string) ([]contracts.Task, error) {
 	return s.store.ListTasks(ctx, workspaceID)
+}
+
+func (s *Service) CreateDeployment(ctx context.Context, item contracts.Deployment) (contracts.Deployment, error) {
+	if strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.ProviderType) == "" || strings.TrimSpace(item.Endpoint) == "" || strings.TrimSpace(item.Model) == "" {
+		return contracts.Deployment{}, contracts.NewError(contracts.ErrInvalidInput, "deployment name, provider type, endpoint and model are required")
+	}
+	now := time.Now().UTC()
+	item.ID = task.NewID("dep")
+	item.Version = contracts.SchemaVersion
+	item.CreatedAt = now
+	item.UpdatedAt = now
+	if err := s.store.CreateDeployment(ctx, item); err != nil {
+		return contracts.Deployment{}, err
+	}
+	return item, nil
+}
+func (s *Service) ListDeployments(ctx context.Context) ([]contracts.Deployment, error) {
+	return s.store.ListDeployments(ctx)
+}
+func (s *Service) ProbeDeployment(ctx context.Context, deploymentID string) (contracts.HealthStatus, contracts.CapabilitySnapshot, error) {
+	if s.resolveProvider == nil {
+		return contracts.HealthStatus{}, contracts.CapabilitySnapshot{}, contracts.NewError(contracts.ErrCapabilityUnsupported, "no provider resolver is configured")
+	}
+	deployment, err := s.store.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return contracts.HealthStatus{}, contracts.CapabilitySnapshot{}, err
+	}
+	provider, err := s.resolveProvider(deployment)
+	if err != nil {
+		return contracts.HealthStatus{}, contracts.CapabilitySnapshot{}, err
+	}
+	health := provider.HealthCheck(ctx)
+	snapshot := provider.ProbeCapabilities(ctx)
+	snapshot.ID = task.NewID("cap")
+	snapshot.DeploymentID = deployment.ID
+	snapshot.Version = contracts.SchemaVersion
+	if err = s.store.SaveCapabilitySnapshot(ctx, snapshot); err != nil {
+		return contracts.HealthStatus{}, contracts.CapabilitySnapshot{}, err
+	}
+	return health, snapshot, nil
 }
 
 type CreateTaskInput struct {

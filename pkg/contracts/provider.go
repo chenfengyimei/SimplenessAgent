@@ -78,6 +78,8 @@ type HealthStatus struct {
 }
 
 type CapabilitySnapshot struct {
+	ID                    string    `json:"capability_snapshot_id,omitempty"`
+	DeploymentID          string    `json:"deployment_id,omitempty"`
 	Version               int       `json:"version"`
 	SupportsTools         bool      `json:"supports_tools"`
 	SupportsStreaming     bool      `json:"supports_streaming"`
