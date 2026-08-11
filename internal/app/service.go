@@ -15,6 +15,7 @@ import (
 	"github.com/xm/simplenessagent/internal/eventstore"
 	"github.com/xm/simplenessagent/internal/plan"
 	"github.com/xm/simplenessagent/internal/planner"
+	"github.com/xm/simplenessagent/internal/policy"
 	"github.com/xm/simplenessagent/internal/storage"
 	"github.com/xm/simplenessagent/internal/task"
 	"github.com/xm/simplenessagent/internal/tool"
@@ -175,6 +176,172 @@ type CreateTaskInput struct {
 	Constraints              []contracts.Constraint
 	AcceptanceCriteria       []contracts.AcceptanceCriterion
 	Budget                   contracts.TaskBudget
+}
+
+// WriteFileInput is the complete, parameter-bound request for a file write.
+// The expected hash prevents a stale plan or approval from overwriting newer
+// workspace content.
+type WriteFileInput struct {
+	TaskID, StepID, Path, Content, ExpectedContentHash string
+}
+
+// ApproveWriteFile creates a single-use approval ticket for exactly one file
+// write. It may be called before a step starts, but WriteFile rechecks that the
+// step is currently running before it permits any side effect.
+func (s *Service) ApproveWriteFile(ctx context.Context, input WriteFileInput, expiresAt time.Time) (contracts.ApprovalTicket, error) {
+	if err := validateWriteInput(input); err != nil {
+		return contracts.ApprovalTicket{}, err
+	}
+	item, step, workspaceItem, err := s.writeContext(ctx, input.TaskID, input.StepID, false)
+	if err != nil {
+		return contracts.ApprovalTicket{}, err
+	}
+	if err = validateWriteScope(workspaceItem.RootPath, step.WorkspaceScopes, input.Path); err != nil {
+		return contracts.ApprovalTicket{}, err
+	}
+	intent, err := writeIntent(item.ID, input)
+	if err != nil {
+		return contracts.ApprovalTicket{}, err
+	}
+	ticket := contracts.ApprovalTicket{ID: task.NewID("apr"), TaskID: item.ID, StepID: input.StepID, ToolName: intent.ToolName, ArgumentsHash: intent.ArgumentsHash, Decision: "APPROVED", ExpiresAt: expiresAt, UsesRemaining: 1, CreatedAt: time.Now().UTC()}
+	event, err := s.newEvent(ctx, item.ID, "TOOL_APPROVED", map[string]interface{}{"approval_id": ticket.ID, "step_id": ticket.StepID, "tool_name": ticket.ToolName, "arguments_hash": ticket.ArgumentsHash, "expires_at": ticket.ExpiresAt})
+	if err != nil {
+		return contracts.ApprovalTicket{}, err
+	}
+	if err = s.store.CreateApprovalWithEvent(ctx, ticket, event); err != nil {
+		return contracts.ApprovalTicket{}, err
+	}
+	return ticket, nil
+}
+
+// WriteFile records a durable intent before executing a user-approved,
+// workspace-scoped atomic file replacement.
+func (s *Service) WriteFile(ctx context.Context, input WriteFileInput) (contracts.ToolResult, error) {
+	if err := validateWriteInput(input); err != nil {
+		return contracts.ToolResult{}, err
+	}
+	item, step, workspaceItem, err := s.writeContext(ctx, input.TaskID, input.StepID, true)
+	if err != nil {
+		return contracts.ToolResult{}, err
+	}
+	if err = validateWriteScope(workspaceItem.RootPath, step.WorkspaceScopes, input.Path); err != nil {
+		return contracts.ToolResult{}, err
+	}
+	intent, err := writeIntent(item.ID, input)
+	if err != nil {
+		return contracts.ToolResult{}, err
+	}
+	event, err := s.newEvent(ctx, item.ID, "TOOL_INTENT_RECORDED", map[string]interface{}{"step_id": step.StepID, "tool_name": intent.ToolName, "arguments_hash": intent.ArgumentsHash, "idempotency_key": intent.IdempotencyKey})
+	if err != nil {
+		return contracts.ToolResult{}, err
+	}
+	record, err := s.store.RecordToolIntentWithEvent(ctx, contracts.ToolCallRecord{ID: task.NewID("tcall"), Version: contracts.SchemaVersion, StepID: step.StepID, ToolName: intent.ToolName, ArgumentsHash: intent.ArgumentsHash, IdempotencyKey: intent.IdempotencyKey, Risk: intent.Risk, Status: "INTENT_RECORDED", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, event)
+	if err != nil {
+		return contracts.ToolResult{}, err
+	}
+	registry := tool.NewRegistry()
+	if err = tool.RegisterApprovedWriteFile(registry, workspaceItem.RootPath, func(map[string]interface{}) error {
+		return s.store.ConsumeApproval(ctx, item.ID, step.StepID, intent.ToolName, intent.ArgumentsHash)
+	}); err != nil {
+		return contracts.ToolResult{}, err
+	}
+	result, invokeErr := tool.Invoke(registry, intent.ToolName)(ctx, writeArguments(input))
+	if invokeErr != nil {
+		return contracts.ToolResult{}, invokeErr
+	}
+	result.ToolCallID = record.ID
+	if err = s.store.UpdateToolIntentStatus(ctx, record.ID, result.Status); err != nil {
+		return contracts.ToolResult{}, err
+	}
+	return result, nil
+}
+
+func writeIntent(taskID string, input WriteFileInput) (policy.Intent, error) {
+	return policy.NewIntent("write_file", writeArguments(input), contracts.RiskWrite, taskID+"\x00"+input.StepID)
+}
+
+func writeArguments(input WriteFileInput) map[string]interface{} {
+	return map[string]interface{}{"path": input.Path, "content": input.Content, "expected_content_hash": input.ExpectedContentHash}
+}
+
+func validateWriteInput(input WriteFileInput) error {
+	if strings.TrimSpace(input.TaskID) == "" || strings.TrimSpace(input.StepID) == "" || strings.TrimSpace(input.Path) == "" || strings.TrimSpace(input.ExpectedContentHash) == "" {
+		return contracts.NewError(contracts.ErrInvalidInput, "task_id, step_id, path and expected_content_hash are required")
+	}
+	return nil
+}
+
+func (s *Service) writeContext(ctx context.Context, taskID, stepID string, requireRunning bool) (contracts.Task, contracts.StepSpec, contracts.Workspace, error) {
+	item, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return contracts.Task{}, contracts.StepSpec{}, contracts.Workspace{}, err
+	}
+	if item.Status.Terminal() {
+		return contracts.Task{}, contracts.StepSpec{}, contracts.Workspace{}, contracts.NewError(contracts.ErrInvalidTransition, "cannot approve or execute a completed task")
+	}
+	activePlan, err := s.store.GetLatestPlan(ctx, taskID)
+	if err != nil {
+		return contracts.Task{}, contracts.StepSpec{}, contracts.Workspace{}, err
+	}
+	var step contracts.StepSpec
+	found := false
+	for _, candidate := range activePlan.Steps {
+		if candidate.StepID == stepID {
+			step, found = candidate, true
+			break
+		}
+	}
+	if !found {
+		return contracts.Task{}, contracts.StepSpec{}, contracts.Workspace{}, contracts.NewError(contracts.ErrNotFound, "step is not in the active plan")
+	}
+	if !contains(step.AllowedTools, "write_file") || step.Risk != contracts.RiskWrite {
+		return contracts.Task{}, contracts.StepSpec{}, contracts.Workspace{}, contracts.NewError(contracts.ErrToolNotAllowed, "write_file is not authorized for this step")
+	}
+	if requireRunning {
+		if item.Status != contracts.TaskRunning {
+			return contracts.Task{}, contracts.StepSpec{}, contracts.Workspace{}, contracts.NewError(contracts.ErrInvalidTransition, "write_file requires a running task")
+		}
+		states, stateErr := s.store.GetSteps(ctx, activePlan.PlanID)
+		if stateErr != nil {
+			return contracts.Task{}, contracts.StepSpec{}, contracts.Workspace{}, stateErr
+		}
+		for _, state := range states {
+			if state.StepID == stepID && state.Status == contracts.StepRunning {
+				workspaceItem, workspaceErr := s.store.GetWorkspace(ctx, item.WorkspaceID)
+				return item, step, workspaceItem, workspaceErr
+			}
+		}
+		return contracts.Task{}, contracts.StepSpec{}, contracts.Workspace{}, contracts.NewError(contracts.ErrInvalidTransition, "write_file requires a running step")
+	}
+	workspaceItem, err := s.store.GetWorkspace(ctx, item.WorkspaceID)
+	return item, step, workspaceItem, err
+}
+
+func validateWriteScope(root string, scopes []string, path string) error {
+	target, err := workspace.ResolveWithin(root, path)
+	if err != nil {
+		return err
+	}
+	for _, scope := range scopes {
+		scopePath, scopeErr := workspace.ResolveWithin(root, scope)
+		if scopeErr != nil {
+			return scopeErr
+		}
+		relative, relErr := filepath.Rel(scopePath, target)
+		if relErr == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative) {
+			return nil
+		}
+	}
+	return contracts.NewError(contracts.ErrPathDenied, "write path is outside the step workspace scopes")
+}
+
+func contains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) CreateTask(ctx context.Context, input CreateTaskInput) (contracts.Task, contracts.PlanVersion, error) {

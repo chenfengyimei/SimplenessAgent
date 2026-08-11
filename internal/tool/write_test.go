@@ -33,6 +33,13 @@ func TestApprovedWriteFileChecksApprovalAndHash(t *testing.T) {
 	if approved != 1 {
 		t.Fatalf("approval callback called %d times, want 1", approved)
 	}
+	result, err = Invoke(r, "write_file")(context.Background(), map[string]interface{}{"path": "a.txt", "content": "new", "expected_content_hash": hash([]byte("old"))})
+	if err != nil || result.Status != "SUCCEEDED" || result.Data["recovered"] != true {
+		t.Fatal(result, err)
+	}
+	if approved != 1 {
+		t.Fatalf("recovery consumed approval: %d", approved)
+	}
 }
 
 func TestApprovedWriteFileDoesNotWriteWhenApprovalRejected(t *testing.T) {

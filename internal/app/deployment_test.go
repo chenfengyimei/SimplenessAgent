@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/xm/simplenessagent/internal/provider/mock"
 	"github.com/xm/simplenessagent/pkg/contracts"
@@ -34,6 +37,90 @@ func TestDeploymentProbePersistsCapabilitySnapshot(t *testing.T) {
 	if len(deployments) != 1 || deployments[0].CapabilitySnapshotID != snapshot.ID {
 		t.Fatalf("snapshot linkage was not persisted: %#v", deployments)
 	}
+}
+
+func TestApprovedWriteFilePersistsIntentAndRecovers(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	target := filepath.Join(root, "note.txt")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "write", Goal: "write a note"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := contracts.StepSpec{Version: contracts.SchemaVersion, StepID: "write-step", Title: "Write", Goal: "write the approved note", AllowedTools: []string{"write_file"}, WorkspaceScopes: []string{"."}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "file", Type: contracts.AcceptanceFileExists, Description: "note exists", Spec: map[string]interface{}{"path": "note.txt"}}}, Risk: contracts.RiskWrite, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 1, MaxDurationMS: 1000}, ExecutionMode: "CONTROLLED"}
+	planVersion := contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: "write-plan", TaskID: created.ID, Revision: 2, ParentPlanID: "initial", Reason: "TEST", Summary: "write", Steps: []contracts.StepSpec{step}, CreatedByAgent: "test", CreatedAt: time.Now().UTC()}
+	event, err := service.newEvent(ctx, created.ID, "PLAN_CREATED", map[string]interface{}{"plan_id": planVersion.PlanID, "revision": planVersion.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.store.CreatePlan(ctx, planVersion, event); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.transitionTask(ctx, created.ID, contracts.TaskReady, contracts.TaskRunning, "TASK_STATUS_CHANGED"); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.transitionStep(ctx, created.ID, step.StepID, contracts.StepPending, contracts.StepReady, "STEP_STATUS_CHANGED"); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.transitionStep(ctx, created.ID, step.StepID, contracts.StepReady, contracts.StepRunning, "STEP_STATUS_CHANGED"); err != nil {
+		t.Fatal(err)
+	}
+	input := WriteFileInput{TaskID: created.ID, StepID: step.StepID, Path: "note.txt", Content: "new", ExpectedContentHash: contentHash([]byte("old"))}
+	ticket, err := service.ApproveWriteFile(ctx, input, time.Now().Add(time.Minute))
+	if err != nil || ticket.ID == "" {
+		t.Fatal(ticket, err)
+	}
+	result, err := service.WriteFile(ctx, input)
+	if err != nil || result.Status != "SUCCEEDED" || result.Data["recovered"] != false {
+		t.Fatal(result, err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "new" {
+		t.Fatal(string(data), err)
+	}
+	intent, err := writeIntent(created.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := service.store.GetToolIntent(ctx, intent.IdempotencyKey)
+	if err != nil || record.Status != "SUCCEEDED" || result.ToolCallID != record.ID {
+		t.Fatal(record, err)
+	}
+	retry, err := service.WriteFile(ctx, input)
+	if err != nil || retry.Status != "SUCCEEDED" || retry.Data["recovered"] != true {
+		t.Fatal(retry, err)
+	}
+	snapshot, err := service.GetTaskSnapshot(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundApproval, intentEvents := false, 0
+	for _, taskEvent := range snapshot.Events {
+		foundApproval = foundApproval || taskEvent.EventType == "TOOL_APPROVED"
+		if taskEvent.EventType == "TOOL_INTENT_RECORDED" {
+			intentEvents++
+		}
+	}
+	if !foundApproval || intentEvents != 1 {
+		t.Fatalf("unexpected approval audit events: approved=%t intents=%d", foundApproval, intentEvents)
+	}
+}
+
+func contentHash(value []byte) string {
+	digest := sha256.Sum256(value)
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 func TestGeneratePlanPersistsModelRevision(t *testing.T) {

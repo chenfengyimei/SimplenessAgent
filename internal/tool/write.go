@@ -30,8 +30,12 @@ func RegisterApprovedWriteFile(registry *Registry, root string, approve func(map
 		if err != nil {
 			return failed(started, err), nil
 		}
-		if err = checkExpectedContent(target, expected); err != nil {
+		alreadyApplied, err := checkExpectedContent(target, expected, hash([]byte(content)))
+		if err != nil {
 			return failed(started, err), nil
+		}
+		if alreadyApplied {
+			return success(started, "file already contains requested content", map[string]interface{}{"path": path, "content_hash": hash([]byte(content)), "recovered": true}), nil
 		}
 		if err = ctx.Err(); err != nil {
 			return failed(started, err), nil
@@ -39,10 +43,15 @@ func RegisterApprovedWriteFile(registry *Registry, root string, approve func(map
 		if err = approve(args); err != nil {
 			return failed(started, err), nil
 		}
-		if err = writeChecked(target, []byte(content), expected); err != nil {
+		alreadyApplied, err = writeChecked(target, []byte(content), expected)
+		if err != nil {
 			return failed(started, err), nil
 		}
-		return contracts.ToolResult{Version: contracts.SchemaVersion, ToolCallID: task.NewID("tcall"), Status: "SUCCEEDED", Summary: "file written", Data: map[string]interface{}{"path": path, "content_hash": hash([]byte(content))}, StartedAt: started, CompletedAt: time.Now().UTC()}, nil
+		summary := "file written"
+		if alreadyApplied {
+			summary = "file already contains requested content"
+		}
+		return contracts.ToolResult{Version: contracts.SchemaVersion, ToolCallID: task.NewID("tcall"), Status: "SUCCEEDED", Summary: summary, Data: map[string]interface{}{"path": path, "content_hash": hash([]byte(content)), "recovered": alreadyApplied}, StartedAt: started, CompletedAt: time.Now().UTC()}, nil
 	})
 }
 
@@ -56,14 +65,15 @@ func writeArguments(args map[string]interface{}) (string, string, string, error)
 	return path, content, expected, nil
 }
 
-func writeChecked(target string, content []byte, expected string) error {
-	if err := checkExpectedContent(target, expected); err != nil {
-		return err
+func writeChecked(target string, content []byte, expected string) (bool, error) {
+	alreadyApplied, err := checkExpectedContent(target, expected, hash(content))
+	if err != nil || alreadyApplied {
+		return alreadyApplied, err
 	}
 	parent := filepath.Dir(target)
 	temp, err := os.CreateTemp(parent, ".simpleness-write-*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	name := temp.Name()
 	defer os.Remove(name)
@@ -74,21 +84,24 @@ func writeChecked(target string, content []byte, expected string) error {
 		err = closeErr
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	return os.Rename(name, target)
+	return false, os.Rename(name, target)
 }
 
-func checkExpectedContent(target, expected string) error {
+func checkExpectedContent(target, expected, desired string) (bool, error) {
 	current, err := os.ReadFile(target)
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		return false, err
 	}
 	actual := hash(current)
-	if expected != actual {
-		return contracts.NewError(contracts.ErrSideEffectUnknown, "expected content hash does not match current file")
+	if actual == desired {
+		return true, nil
 	}
-	return nil
+	if expected != actual {
+		return false, contracts.NewError(contracts.ErrSideEffectUnknown, "expected content hash does not match current file")
+	}
+	return false, nil
 }
 func hash(value []byte) string {
 	digest := sha256.Sum256(value)
