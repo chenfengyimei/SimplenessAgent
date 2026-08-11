@@ -14,6 +14,7 @@ import (
 	"github.com/xm/simplenessagent/internal/artifact"
 	"github.com/xm/simplenessagent/internal/eventstore"
 	"github.com/xm/simplenessagent/internal/plan"
+	"github.com/xm/simplenessagent/internal/planner"
 	"github.com/xm/simplenessagent/internal/storage"
 	"github.com/xm/simplenessagent/internal/task"
 	"github.com/xm/simplenessagent/internal/tool"
@@ -115,6 +116,57 @@ func (s *Service) ProbeDeployment(ctx context.Context, deploymentID string) (con
 		return contracts.HealthStatus{}, contracts.CapabilitySnapshot{}, err
 	}
 	return health, snapshot, nil
+}
+
+// GeneratePlan creates and atomically persists a locally-validated revision.
+// It does not alter task state, so callers may review the plan before running.
+func (s *Service) GeneratePlan(ctx context.Context, taskID, deploymentID string) (contracts.PlanVersion, error) {
+	if s.resolveProvider == nil {
+		return contracts.PlanVersion{}, contracts.NewError(contracts.ErrCapabilityUnsupported, "no provider resolver is configured")
+	}
+	item, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	deployment, err := s.store.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	if !deployment.Enabled {
+		return contracts.PlanVersion{}, contracts.NewError(contracts.ErrPermissionDenied, "deployment is disabled")
+	}
+	provider, err := s.resolveProvider(deployment)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	workspaceItem, err := s.store.GetWorkspace(ctx, item.WorkspaceID)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	registry := tool.NewRegistry()
+	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	previous, err := s.store.GetLatestPlan(ctx, item.ID)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	plannerService, err := planner.New(provider)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	candidate, err := plannerService.Create(ctx, planner.Input{DeploymentID: deployment.ID, Task: item, AvailableTools: registry.Definitions(), Revision: previous.Revision + 1, ParentPlanID: previous.PlanID})
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	event, err := s.newEvent(ctx, item.ID, "PLAN_CREATED", map[string]interface{}{"plan_id": candidate.PlanID, "revision": candidate.Revision, "parent_plan_id": candidate.ParentPlanID, "source": "MODEL"})
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	if err = s.store.CreatePlan(ctx, candidate, event); err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	return candidate, nil
 }
 
 type CreateTaskInput struct {

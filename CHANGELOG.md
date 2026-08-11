@@ -43,5 +43,7 @@
 
 - 新增 Deployment、CapabilitySnapshot 迁移、持久化与 App Service 探测入口。
 
+- App Service 现可通过已启用 Deployment 生成并审计持久化模型 Plan Revision。
+
 [Unreleased]: https://github.com/chenfengyimei/SimplenessAgent/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/chenfengyimei/SimplenessAgent/releases/tag/v0.1.0
