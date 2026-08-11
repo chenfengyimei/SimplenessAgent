@@ -2,7 +2,10 @@
 // the core, CLI, desktop client, and future extensions.
 package contracts
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const SchemaVersion = 1
 
@@ -212,6 +215,18 @@ type EventEnvelope struct {
 	CorrelationID string                 `json:"correlation_id,omitempty"`
 	CausationID   string                 `json:"causation_id,omitempty"`
 	Payload       map[string]interface{} `json:"payload"`
+}
+
+// Checkpoint is an immutable, point-in-time task snapshot. Snapshot is kept as
+// JSON so clients can evolve their read model without changing the SQLite
+// checkpoint envelope.
+type Checkpoint struct {
+	ID        string          `json:"checkpoint_id"`
+	Version   int             `json:"version"`
+	TaskID    string          `json:"task_id"`
+	Sequence  int64           `json:"sequence"`
+	Snapshot  json.RawMessage `json:"snapshot"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 type Artifact struct {

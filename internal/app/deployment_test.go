@@ -118,6 +118,45 @@ func TestApprovedWriteFilePersistsIntentAndRecovers(t *testing.T) {
 	}
 }
 
+func TestRecoverRunningTaskPausesFromCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "recover", Goal: "recover safely"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.transitionTask(ctx, created.ID, contracts.TaskReady, contracts.TaskRunning, "TASK_STATUS_CHANGED"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.CheckpointTask(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	before, err := service.store.GetLatestCheckpoint(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.RecoverRunningTask(ctx, created.ID)
+	if err != nil || snapshot.Task.Status != contracts.TaskPaused {
+		t.Fatal(snapshot, err)
+	}
+	after, err := service.store.GetLatestCheckpoint(ctx, created.ID)
+	if err != nil || after.Sequence <= before.Sequence {
+		t.Fatal(after, err)
+	}
+	last := snapshot.Events[len(snapshot.Events)-1]
+	if last.EventType != "TASK_RECOVERY_PAUSED" {
+		t.Fatal(last)
+	}
+}
+
 func contentHash(value []byte) string {
 	digest := sha256.Sum256(value)
 	return "sha256:" + hex.EncodeToString(digest[:])

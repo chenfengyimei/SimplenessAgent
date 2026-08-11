@@ -434,6 +434,9 @@ func (s *Service) RunTask(ctx context.Context, taskID string) (TaskSnapshot, err
 	if err = s.transitionStep(ctx, taskID, stepID, contracts.StepReady, contracts.StepRunning, "STEP_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
 	}
+	if _, err = s.CheckpointTask(ctx, taskID); err != nil {
+		return TaskSnapshot{}, err
+	}
 	if err = s.runReconnaissance(ctx, item, stepID); err != nil {
 		_ = s.transitionTask(ctx, taskID, contracts.TaskRunning, contracts.TaskFailed, "TASK_STATUS_CHANGED")
 		return TaskSnapshot{}, err
@@ -465,12 +468,56 @@ func (s *Service) RunTask(ctx context.Context, taskID string) (TaskSnapshot, err
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
-	if len(snapshot.Events) > 0 {
-		if err = s.store.SaveCheckpoint(ctx, task.NewID("chk"), taskID, snapshot.Events[len(snapshot.Events)-1].Sequence, snapshot); err != nil {
-			return TaskSnapshot{}, err
-		}
+	if _, err = s.CheckpointTask(ctx, taskID); err != nil {
+		return TaskSnapshot{}, err
 	}
 	return snapshot, nil
+}
+
+// CheckpointTask saves the latest materialized task state once per event
+// sequence and returns the snapshot that was captured.
+func (s *Service) CheckpointTask(ctx context.Context, taskID string) (TaskSnapshot, error) {
+	snapshot, err := s.GetTaskSnapshot(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if len(snapshot.Events) == 0 {
+		return snapshot, nil
+	}
+	sequence := snapshot.Events[len(snapshot.Events)-1].Sequence
+	latest, latestErr := s.store.GetLatestCheckpoint(ctx, taskID)
+	if latestErr == nil && latest.Sequence >= sequence {
+		return snapshot, nil
+	}
+	if latestErr != nil {
+		if domain, ok := latestErr.(*contracts.Error); !ok || domain.Code != contracts.ErrNotFound {
+			return TaskSnapshot{}, latestErr
+		}
+	}
+	if err = s.store.SaveCheckpoint(ctx, task.NewID("chk"), taskID, sequence, snapshot); err != nil {
+		return TaskSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+// RecoverRunningTask records the observed state and pauses a task that was
+// left RUNNING by an interrupted process. It intentionally does not replay a
+// step or a side effect; a later scheduler or replan must choose that action.
+func (s *Service) RecoverRunningTask(ctx context.Context, taskID string) (TaskSnapshot, error) {
+	item, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if item.Status != contracts.TaskRunning {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "only RUNNING tasks require recovery")
+	}
+	if _, err = s.CheckpointTask(ctx, taskID); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionTask(ctx, taskID, contracts.TaskRunning, contracts.TaskPaused, "TASK_RECOVERY_PAUSED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	return s.CheckpointTask(ctx, taskID)
 }
 
 func (s *Service) VerifyTask(ctx context.Context, taskID string) (verifier.FinalReport, error) {

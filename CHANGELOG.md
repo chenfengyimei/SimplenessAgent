@@ -16,6 +16,11 @@
 - 首次 Intent 与审计事件、审批票据与审计事件分别以 SQLite 单事务保存；审批按任务、步骤、工具与参数哈希精确单次消费。
 - 成功和失败结果均回写同一 Intent；重试发现目标内容已经一致时安全收敛，不重复消耗票据或产生 Intent 审计事件。
 
+### 2026-08-11 Safe running-task recovery
+
+- 新增版本化 Checkpoint 读取模型和运行边界的自动 Checkpoint；同一事件序列只保存一次快照。
+- 新增显式恢复操作：遗留 `RUNNING` 任务先保存观测到的状态，再原子转为 `PAUSED` 并记录 `TASK_RECOVERY_PAUSED`；不会自动重放步骤或副作用。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。

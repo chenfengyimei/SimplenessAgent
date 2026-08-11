@@ -375,6 +375,21 @@ func (s *Store) SaveCheckpoint(ctx context.Context, id, taskID string, sequence 
 	return err
 }
 
+func (s *Store) GetLatestCheckpoint(ctx context.Context, taskID string) (contracts.Checkpoint, error) {
+	var item contracts.Checkpoint
+	var snapshot, created string
+	err := s.db.QueryRowContext(ctx, `SELECT checkpoint_id,version,task_id,sequence,snapshot_json,created_at FROM checkpoints WHERE task_id=? ORDER BY sequence DESC LIMIT 1`, taskID).Scan(&item.ID, &item.Version, &item.TaskID, &item.Sequence, &snapshot, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return item, contracts.NewError(contracts.ErrNotFound, "checkpoint not found")
+	}
+	if err != nil {
+		return item, err
+	}
+	item.Snapshot = json.RawMessage(snapshot)
+	item.CreatedAt, _ = parseTimestamp(created)
+	return item, nil
+}
+
 func (s *Store) NextSequence(ctx context.Context, aggregateType, aggregateID string) (int64, error) {
 	var seq int64
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence),0)+1 FROM events WHERE aggregate_type=? AND aggregate_id=?`, aggregateType, aggregateID).Scan(&seq)
