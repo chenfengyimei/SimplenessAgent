@@ -50,11 +50,16 @@ The initial framework is implemented and tested as a P0/P1 vertical slice:
 - Workspace-bound, read-only `list_files`, `read_file` and `search_text` tools.
 - Atomic content-addressed Artifact storage and evidence links.
 - A Mock Provider boundary and a CLI that drives the same Core an eventual Wails client will use.
+- An OpenAI-compatible `/v1` Provider adapter with normalized chat/tool calls, SSE streaming, cancellation and active capability probing. It is available to the future Worker, but intentionally not wired into the safe reconnaissance-only CLI yet.
 - Integration, recovery, state-machine, plan and path-boundary tests.
 
 The implemented runner intentionally executes a safe reconnaissance step only. Model-driven planning/execution and mutating tools are defined by contracts but remain disabled until their approvals, write-ahead intent records and recovery checks are complete.
 
 See [Docs/11-基础框架实现状态.md](Docs/11-基础框架实现状态.md) for the implementation boundary and next increments.
+
+## Provider adapter
+
+The adapter is a library boundary, configured by the eventual Deployment service rather than command-line flags. It accepts a base URL such as `http://127.0.0.1:8080/v1`, a model ID and an optional API key; callers should always use a bounded `context.Context` for `ProbeCapabilities`, because that operation sends small text, streaming and tool-shape probes.
 
 ## Prerequisites
 

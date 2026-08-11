@@ -25,5 +25,10 @@
 
 - 默认 fail-closed：尚未完成审批、Write-ahead 与恢复审计的写入、危险、网络及外部副作用工具保持禁用。
 
+### 2026-08-11 Provider PoC
+
+- 新增 OpenAI-compatible `/v1` Provider：同步文本与 Tool Call、SSE 流式事件、取消、错误分类和主动能力探测。
+- 新增 Provider Tool Call/Stream 事件契约，以及 HTTP 适配器的本地契约测试。
+
 [Unreleased]: https://github.com/chenfengyimei/SimplenessAgent/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/chenfengyimei/SimplenessAgent/releases/tag/v0.1.0

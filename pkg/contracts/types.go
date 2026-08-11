@@ -221,15 +221,16 @@ type Evidence struct {
 }
 
 type ToolDefinition struct {
-	Version              int       `json:"version"`
-	Name                 string    `json:"name"`
-	ToolVersion          string    `json:"tool_version"`
-	Description          string    `json:"description"`
-	RiskClass            RiskClass `json:"risk_class"`
-	RequiredCapabilities []string  `json:"required_capabilities"`
-	DefaultTimeoutMS     int64     `json:"default_timeout_ms"`
-	MaxOutputBytes       int       `json:"max_output_bytes"`
-	SupportsCancel       bool      `json:"supports_cancel"`
+	Version              int                    `json:"version"`
+	Name                 string                 `json:"name"`
+	ToolVersion          string                 `json:"tool_version"`
+	Description          string                 `json:"description"`
+	ParametersSchema     map[string]interface{} `json:"parameters_schema,omitempty"`
+	RiskClass            RiskClass              `json:"risk_class"`
+	RequiredCapabilities []string               `json:"required_capabilities"`
+	DefaultTimeoutMS     int64                  `json:"default_timeout_ms"`
+	MaxOutputBytes       int                    `json:"max_output_bytes"`
+	SupportsCancel       bool                   `json:"supports_cancel"`
 }
 
 type ToolResult struct {

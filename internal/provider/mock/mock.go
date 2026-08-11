@@ -15,6 +15,18 @@ type Provider struct{ Response string }
 func (p Provider) Chat(_ context.Context, _ contracts.ChatRequest) (contracts.ChatResponse, error) {
 	return contracts.ChatResponse{MessageID: task.NewID("msg"), Text: p.Response, FinishReason: "stop", Latency: 0}, nil
 }
+func (p Provider) ChatStream(ctx context.Context, req contracts.ChatRequest, sink contracts.StreamSink) error {
+	response, err := p.Chat(ctx, req)
+	if err != nil {
+		return err
+	}
+	if response.Text != "" {
+		if err = sink(contracts.StreamEvent{Type: contracts.StreamEventTextDelta, TextDelta: response.Text, Sequence: 1}); err != nil {
+			return err
+		}
+	}
+	return sink(contracts.StreamEvent{Type: contracts.StreamEventCompleted, Response: &response, Sequence: 2})
+}
 func (p Provider) HealthCheck(_ context.Context) contracts.HealthStatus {
 	return contracts.HealthStatus{Healthy: true, Message: "mock provider is ready"}
 }
