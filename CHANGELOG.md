@@ -51,5 +51,9 @@
 - FinalReport 以内容寻址 Artifact 持久化。
 - `FILE_EXISTS` 接收条件现在经授权工作区边界验证。
 
+### 2026-08-11 Write-ahead intents
+
+- 新增规范化 Tool Intent、幂等恢复与原子审批票据消费基础。
+
 [Unreleased]: https://github.com/chenfengyimei/SimplenessAgent/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/chenfengyimei/SimplenessAgent/releases/tag/v0.1.0

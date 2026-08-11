@@ -267,6 +267,32 @@ type ToolResult struct {
 	CompletedAt time.Time              `json:"completed_at"`
 }
 
+type ToolCallRecord struct {
+	ID             string    `json:"tool_call_id"`
+	Version        int       `json:"version"`
+	RunID          string    `json:"run_id,omitempty"`
+	StepID         string    `json:"step_id"`
+	ToolName       string    `json:"tool_name"`
+	ArgumentsHash  string    `json:"normalized_arguments_hash"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	Risk           RiskClass `json:"risk_class"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type ApprovalTicket struct {
+	ID            string    `json:"approval_id"`
+	TaskID        string    `json:"task_id"`
+	StepID        string    `json:"step_id"`
+	ToolName      string    `json:"tool_name"`
+	ArgumentsHash string    `json:"normalized_arguments_hash"`
+	Decision      string    `json:"decision"`
+	ExpiresAt     time.Time `json:"expires_at,omitempty"`
+	UsesRemaining int       `json:"uses_remaining"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
 type ToolError struct {
 	Code        string `json:"code"`
 	Message     string `json:"message"`
