@@ -300,6 +300,34 @@ type Skill struct {
 	Instructions string        `json:"instructions"`
 }
 
+type AgentStatus string
+
+const (
+	AgentPending   AgentStatus = "PENDING"
+	AgentRunning   AgentStatus = "RUNNING"
+	AgentSucceeded AgentStatus = "SUCCEEDED"
+	AgentFailed    AgentStatus = "FAILED"
+	AgentCancelled AgentStatus = "CANCELLED"
+)
+
+// AgentAssignment is a durable, capability-snapshotted delegation created by
+// the Coordinator. The public contract has no parent-agent creation path:
+// initial subagents are always depth one.
+type AgentAssignment struct {
+	ID              string      `json:"agent_id"`
+	Version         int         `json:"version"`
+	TaskID          string      `json:"task_id"`
+	StepID          string      `json:"step_id"`
+	DeploymentID    string      `json:"deployment_id"`
+	Role            string      `json:"role"`
+	Depth           int         `json:"depth"`
+	AllowedTools    []string    `json:"allowed_tools"`
+	WorkspaceScopes []string    `json:"workspace_scopes"`
+	Status          AgentStatus `json:"status"`
+	CreatedAt       time.Time   `json:"created_at"`
+	UpdatedAt       time.Time   `json:"updated_at"`
+}
+
 // AgentReport is the immutable handoff from a bounded Worker invocation to
 // task state and verification. It records observed tool results, not a model
 // claim that task acceptance has been met.

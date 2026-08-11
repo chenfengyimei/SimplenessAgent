@@ -245,6 +245,50 @@ func TestRunModelStepPersistsAgentReportAndVerifiesTask(t *testing.T) {
 	}
 }
 
+func TestAssignReadOnlyAgentPersistsOneLayerCapabilitySnapshot(t *testing.T) {
+	ctx := context.Background()
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, planVersion, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "delegate", Goal: "inspect", AllowSubagents: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := service.AssignReadOnlyAgent(ctx, AssignAgentInput{TaskID: created.ID, StepID: planVersion.Steps[0].StepID, DeploymentID: deployment.ID, Role: "RECON"})
+	if err != nil || agent.ID == "" || agent.Depth != 1 || agent.Status != contracts.AgentPending || len(agent.AllowedTools) == 0 {
+		t.Fatal(agent, err)
+	}
+	assigned, err := service.ListAgentAssignments(ctx, created.ID)
+	if err != nil || len(assigned) != 1 || assigned[0].ID != agent.ID || assigned[0].Depth != 1 || len(assigned[0].AllowedTools) != len(agent.AllowedTools) {
+		t.Fatal(assigned, err)
+	}
+	snapshot, err := service.GetTaskSnapshot(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range snapshot.Events {
+		found = found || event.EventType == "AGENT_ASSIGNED"
+	}
+	if !found {
+		t.Fatal("agent assignment event was not persisted")
+	}
+	created.Spec.AllowSubagents = false
+	if _, err = service.AssignReadOnlyAgent(ctx, AssignAgentInput{TaskID: created.ID, StepID: planVersion.Steps[0].StepID, DeploymentID: deployment.ID, Role: "RECON"}); err == nil {
+		t.Fatal("second active assignment should be rejected")
+	}
+}
+
 func contentHash(value []byte) string {
 	digest := sha256.Sum256(value)
 	return "sha256:" + hex.EncodeToString(digest[:])

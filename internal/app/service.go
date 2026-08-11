@@ -319,6 +319,7 @@ type CreateTaskInput struct {
 	Constraints              []contracts.Constraint
 	AcceptanceCriteria       []contracts.AcceptanceCriterion
 	Budget                   contracts.TaskBudget
+	AllowSubagents           bool
 }
 
 // WriteFileInput is the complete, parameter-bound request for a file write.
@@ -507,7 +508,7 @@ func (s *Service) CreateTask(ctx context.Context, input CreateTaskInput) (contra
 		input.Budget.MaxReplans = 2
 	}
 	now := time.Now().UTC()
-	spec := contracts.TaskSpec{Version: contracts.SchemaVersion, TaskID: task.NewID("tsk"), WorkspaceID: input.WorkspaceID, Title: input.Title, Goal: input.Goal, Constraints: input.Constraints, AcceptanceCriteria: input.AcceptanceCriteria, Budget: input.Budget, CreatedAt: now}
+	spec := contracts.TaskSpec{Version: contracts.SchemaVersion, TaskID: task.NewID("tsk"), WorkspaceID: input.WorkspaceID, Title: input.Title, Goal: input.Goal, Constraints: input.Constraints, AcceptanceCriteria: input.AcceptanceCriteria, Budget: input.Budget, AllowSubagents: input.AllowSubagents, CreatedAt: now}
 	item := contracts.Task{ID: spec.TaskID, Version: contracts.SchemaVersion, WorkspaceID: spec.WorkspaceID, Title: spec.Title, Goal: spec.Goal, Status: contracts.TaskDraft, Spec: spec, CreatedAt: now, UpdatedAt: now}
 	event, err := s.newEvent(ctx, item.ID, "TASK_CREATED", map[string]interface{}{"title": item.Title})
 	if err != nil {
@@ -621,6 +622,69 @@ type RunModelStepInput struct {
 	TaskID, DeploymentID string
 	ContextPackage       *contracts.ContextPackage
 	Skills               []contracts.Skill
+}
+
+type AssignAgentInput struct {
+	TaskID, StepID, DeploymentID, Role string
+}
+
+// AssignReadOnlyAgent records a single-layer delegation without starting a
+// worker. The coordinator alone creates this capability snapshot; a delegated
+// agent receives no API to spawn another agent or mutate task state.
+func (s *Service) AssignReadOnlyAgent(ctx context.Context, input AssignAgentInput) (contracts.AgentAssignment, error) {
+	if strings.TrimSpace(input.TaskID) == "" || strings.TrimSpace(input.StepID) == "" || strings.TrimSpace(input.DeploymentID) == "" || strings.TrimSpace(input.Role) == "" {
+		return contracts.AgentAssignment{}, contracts.NewError(contracts.ErrInvalidInput, "task_id, step_id, deployment_id and role are required")
+	}
+	item, err := s.store.GetTask(ctx, input.TaskID)
+	if err != nil {
+		return contracts.AgentAssignment{}, err
+	}
+	if item.Status != contracts.TaskReady || !item.Spec.AllowSubagents {
+		return contracts.AgentAssignment{}, contracts.NewError(contracts.ErrPermissionDenied, "task is not eligible for subagent assignment")
+	}
+	deployment, err := s.store.GetDeployment(ctx, input.DeploymentID)
+	if err != nil {
+		return contracts.AgentAssignment{}, err
+	}
+	if !deployment.Enabled {
+		return contracts.AgentAssignment{}, contracts.NewError(contracts.ErrPermissionDenied, "deployment is disabled")
+	}
+	planVersion, err := s.store.GetLatestPlan(ctx, item.ID)
+	if err != nil {
+		return contracts.AgentAssignment{}, err
+	}
+	states, err := s.store.GetSteps(ctx, planVersion.PlanID)
+	if err != nil {
+		return contracts.AgentAssignment{}, err
+	}
+	statusByID := map[string]contracts.StepStatus{}
+	for _, state := range states {
+		statusByID[state.StepID] = state.Status
+	}
+	if !contains(plan.ReadySteps(planVersion, statusByID), input.StepID) {
+		return contracts.AgentAssignment{}, contracts.NewError(contracts.ErrInvalidTransition, "agent assignment requires a dependency-ready step")
+	}
+	step, found := findStep(planVersion, input.StepID)
+	if !found || step.Risk != contracts.RiskRead {
+		return contracts.AgentAssignment{}, contracts.NewError(contracts.ErrToolNotAllowed, "agent assignment only permits read-only steps")
+	}
+	now := time.Now().UTC()
+	agent := contracts.AgentAssignment{ID: task.NewID("agt"), Version: contracts.SchemaVersion, TaskID: item.ID, StepID: step.StepID, DeploymentID: deployment.ID, Role: input.Role, Depth: 1, AllowedTools: append([]string(nil), step.AllowedTools...), WorkspaceScopes: append([]string(nil), step.WorkspaceScopes...), Status: contracts.AgentPending, CreatedAt: now, UpdatedAt: now}
+	event, err := s.newEvent(ctx, item.ID, "AGENT_ASSIGNED", map[string]interface{}{"agent_id": agent.ID, "step_id": agent.StepID, "deployment_id": agent.DeploymentID, "role": agent.Role, "depth": agent.Depth})
+	if err != nil {
+		return contracts.AgentAssignment{}, err
+	}
+	if err = s.store.CreateAgentAssignment(ctx, agent, event); err != nil {
+		return contracts.AgentAssignment{}, err
+	}
+	return agent, nil
+}
+
+func (s *Service) ListAgentAssignments(ctx context.Context, taskID string) ([]contracts.AgentAssignment, error) {
+	if _, err := s.store.GetTask(ctx, taskID); err != nil {
+		return nil, err
+	}
+	return s.store.ListAgentAssignments(ctx, taskID)
 }
 
 // RunModelStep executes exactly one ready read-only Step through the bounded
