@@ -26,6 +26,11 @@
 - 新增 `ReplanTask`：仅允许恢复后处于 `PAUSED` 的任务创建新的模型 Plan Revision，并受 Task 的 `MaxReplans` 预算限制。
 - 重规划上下文只包含前一版 Plan、持久化步骤状态和显式原因；模型不得复用旧 Step ID，Plan 以 `PLAN_REPLANNED` 审计后才将任务转回 `READY`。
 
+### 2026-08-11 Context package compiler
+
+- 新增版本化 `ContextPackage`、段落来源与 Token 预算契约，以及确定性 Context 编译器。
+- 编译器在预留输出 Token 后按优先级选择段落、限制同源段落数量、规范化来源并返回省略项；没有段落可装入预算时 fail-closed 为 `CONTEXT_OVERFLOW`。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。

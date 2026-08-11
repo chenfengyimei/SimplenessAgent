@@ -229,6 +229,35 @@ type Checkpoint struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
+type ContextSection struct {
+	Type            string   `json:"type"`
+	Content         string   `json:"content"`
+	SourceRefs      []string `json:"source_refs"`
+	EstimatedTokens int      `json:"estimated_tokens"`
+	Priority        int      `json:"priority"`
+}
+
+type ContextBudget struct {
+	Limit    int `json:"limit"`
+	Used     int `json:"used"`
+	Reserved int `json:"reserved"`
+}
+
+// ContextPackage is the bounded, attributable input supplied to a model role.
+// Its sections contain only selected source material; omitted material is
+// returned by the compiler as an audit result rather than silently included.
+type ContextPackage struct {
+	Version         int              `json:"version"`
+	ID              string           `json:"context_id"`
+	DeploymentID    string           `json:"deployment_id,omitempty"`
+	Role            string           `json:"role"`
+	TaskID          string           `json:"task_id"`
+	StepID          string           `json:"step_id,omitempty"`
+	Sections        []ContextSection `json:"sections"`
+	Budget          ContextBudget    `json:"budget"`
+	CompilerVersion string           `json:"compiler_version"`
+}
+
 type Artifact struct {
 	ID                    string    `json:"artifact_id"`
 	Version               int       `json:"version"`
