@@ -289,6 +289,61 @@ func TestAssignReadOnlyAgentPersistsOneLayerCapabilitySnapshot(t *testing.T) {
 	}
 }
 
+func TestRunAssignedAgentPersistsHandoffAndStatus(t *testing.T) {
+	ctx := context.Background()
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) {
+		return mock.Provider{Response: "inspected"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, planVersion, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "delegate", Goal: "inspect", AllowSubagents: true, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "agent-report", Type: contracts.AcceptanceEvidenceExists, Description: "report", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := service.AssignReadOnlyAgent(ctx, AssignAgentInput{TaskID: created.ID, StepID: planVersion.Steps[0].StepID, DeploymentID: deployment.ID, Role: "RECON"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.RunAssignedAgent(ctx, agent.ID)
+	if err != nil || snapshot.Task.Status != contracts.TaskCompleted {
+		t.Fatal(snapshot, err)
+	}
+	assigned, err := service.ListAgentAssignments(ctx, created.ID)
+	if err != nil || len(assigned) != 1 || assigned[0].Status != contracts.AgentSucceeded {
+		t.Fatal(assigned, err)
+	}
+	starts, finishes := 0, 0
+	for _, event := range snapshot.Events {
+		if event.EventType == "AGENT_STATUS_CHANGED" && event.Payload["to"] == string(contracts.AgentRunning) {
+			starts++
+		}
+		if event.EventType == "AGENT_STATUS_CHANGED" && event.Payload["to"] == string(contracts.AgentSucceeded) {
+			finishes++
+		}
+	}
+	artifacts, err := service.ListTaskArtifacts(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundHandoff := false
+	for _, artifact := range artifacts {
+		foundHandoff = foundHandoff || artifact.Kind == "AGENT_HANDOFF"
+	}
+	if starts != 1 || finishes != 1 || !foundHandoff {
+		t.Fatalf("expected agent lifecycle and report artifacts: starts=%d finishes=%d snapshot=%#v", starts, finishes, snapshot)
+	}
+}
+
 func contentHash(value []byte) string {
 	digest := sha256.Sum256(value)
 	return "sha256:" + hex.EncodeToString(digest[:])

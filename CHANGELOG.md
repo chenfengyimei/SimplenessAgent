@@ -81,6 +81,11 @@
 - 新增持久化 `AgentAssignment`：Coordinator 仅可为显式允许子 Agent 的 `READY` Task 分配依赖已满足的只读 Step；分配固定为深度 1，并快照 Step 的工具白名单与工作区范围。
 - Assignment 与 `AGENT_ASSIGNED` 事件在同一事务提交；同一 Step 同时最多一个 `PENDING`/`RUNNING` Assignment。此增量不启动递归 Agent、自由 Agent 通信或写权限。
 
+### 2026-08-11 Synchronous single-agent handoff
+
+- 新增 `RunAssignedAgent`：仅可运行深度 1 的 `PENDING` Assignment，复用既有受控只读模型步骤，分别记录 Agent 运行/完成或失败状态事件。
+- 成功执行后持久化仅含 Artifact/Evidence 引用的 `AGENT_HANDOFF`；新增任务 Artifact 查询接口，供后续 Coordinator 与 UI 读取交接事实，而非读取隐藏推理或自由聊天记录。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。

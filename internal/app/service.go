@@ -83,6 +83,13 @@ func (s *Service) ListTasks(ctx context.Context, workspaceID string) ([]contract
 	return s.store.ListTasks(ctx, workspaceID)
 }
 
+func (s *Service) ListTaskArtifacts(ctx context.Context, taskID string) ([]contracts.Artifact, error) {
+	if _, err := s.store.GetTask(ctx, taskID); err != nil {
+		return nil, err
+	}
+	return s.store.ListTaskArtifacts(ctx, taskID)
+}
+
 func (s *Service) CreateMemory(ctx context.Context, item contracts.MemoryRecord) (contracts.MemoryRecord, error) {
 	if _, err := s.store.GetWorkspace(ctx, item.WorkspaceID); err != nil {
 		return contracts.MemoryRecord{}, err
@@ -685,6 +692,68 @@ func (s *Service) ListAgentAssignments(ctx context.Context, taskID string) ([]co
 		return nil, err
 	}
 	return s.store.ListAgentAssignments(ctx, taskID)
+}
+
+// RunAssignedAgent is the only synchronous subagent execution entry. It
+// reuses the bounded read-only model runner, then emits a references-only
+// Handoff artifact. There is no nested assignment input or Agent-to-Agent
+// messaging surface.
+func (s *Service) RunAssignedAgent(ctx context.Context, agentID string) (TaskSnapshot, error) {
+	agent, err := s.store.GetAgentAssignment(ctx, agentID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if agent.Depth != 1 || agent.Status != contracts.AgentPending {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "only pending depth-one assignments can run")
+	}
+	if err = s.transitionAgent(ctx, agent, contracts.AgentPending, contracts.AgentRunning, "AGENT_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	snapshot, runErr := s.RunModelStep(ctx, RunModelStepInput{TaskID: agent.TaskID, DeploymentID: agent.DeploymentID})
+	if runErr != nil {
+		_ = s.transitionAgent(ctx, agent, contracts.AgentRunning, contracts.AgentFailed, "AGENT_STATUS_CHANGED")
+		return TaskSnapshot{}, runErr
+	}
+	if err = s.persistAgentHandoff(ctx, agent, snapshot); err != nil {
+		_ = s.transitionAgent(ctx, agent, contracts.AgentRunning, contracts.AgentFailed, "AGENT_STATUS_CHANGED")
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionAgent(ctx, agent, contracts.AgentRunning, contracts.AgentSucceeded, "AGENT_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	return s.CheckpointTask(ctx, agent.TaskID)
+}
+
+func (s *Service) transitionAgent(ctx context.Context, agent contracts.AgentAssignment, from, to contracts.AgentStatus, eventType string) error {
+	event, err := s.newEvent(ctx, agent.TaskID, eventType, map[string]interface{}{"agent_id": agent.ID, "step_id": agent.StepID, "from": from, "to": to})
+	if err != nil {
+		return err
+	}
+	return s.store.TransitionAgentAssignment(ctx, agent, from, to, event)
+}
+
+func (s *Service) persistAgentHandoff(ctx context.Context, agent contracts.AgentAssignment, snapshot TaskSnapshot) error {
+	var runtime contracts.StepRuntime
+	found := false
+	for _, step := range snapshot.Steps {
+		if step.StepID == agent.StepID {
+			runtime, found = step, true
+			break
+		}
+	}
+	if !found || len(runtime.ArtifactIDs) == 0 || len(runtime.EvidenceIDs) == 0 {
+		return contracts.NewError(contracts.ErrNotFound, "agent report results are unavailable for handoff")
+	}
+	handoff := contracts.HandoffEnvelope{Version: contracts.SchemaVersion, ID: task.NewID("hnd"), AgentID: agent.ID, TaskID: agent.TaskID, StepID: agent.StepID, Summary: "bounded read-only agent completed; inspect referenced report and evidence", ArtifactIDs: runtime.ArtifactIDs, EvidenceIDs: runtime.EvidenceIDs, CreatedAt: time.Now().UTC()}
+	encoded, err := json.MarshalIndent(handoff, "", "  ")
+	if err != nil {
+		return err
+	}
+	artifactItem, err := s.artifactStore.Put("AGENT_HANDOFF", "application/json", "structured agent handoff", agent.TaskID, agent.StepID, encoded)
+	if err != nil {
+		return err
+	}
+	return s.store.SaveArtifact(ctx, artifactItem)
 }
 
 // RunModelStep executes exactly one ready read-only Step through the bounded

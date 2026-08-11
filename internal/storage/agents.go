@@ -50,6 +50,33 @@ func (s *Store) ListAgentAssignments(ctx context.Context, taskID string) ([]cont
 	return items, rows.Err()
 }
 
+func (s *Store) GetAgentAssignment(ctx context.Context, id string) (contracts.AgentAssignment, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT agent_id,version,task_id,step_id,deployment_id,role,depth,allowed_tools_json,workspace_scopes_json,status,created_at,updated_at FROM agent_assignments WHERE agent_id=?`, id)
+	return scanAgentAssignment(row)
+}
+
+func (s *Store) TransitionAgentAssignment(ctx context.Context, item contracts.AgentAssignment, from, to contracts.AgentStatus, event contracts.EventEnvelope) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE agent_assignments SET status=?,updated_at=? WHERE agent_id=? AND status=?`, to, now(), item.ID, from)
+	if err == nil {
+		count, _ := result.RowsAffected()
+		if count != 1 {
+			err = contracts.NewError(contracts.ErrInvalidTransition, "agent assignment changed concurrently or transition is invalid")
+		}
+	}
+	if err == nil {
+		err = s.appendEventTx(ctx, tx, event)
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
 type agentAssignmentRow interface{ Scan(...interface{}) error }
 
 func scanAgentAssignment(row agentAssignmentRow) (contracts.AgentAssignment, error) {

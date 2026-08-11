@@ -328,6 +328,22 @@ type AgentAssignment struct {
 	UpdatedAt       time.Time   `json:"updated_at"`
 }
 
+// HandoffEnvelope carries only persisted facts between bounded agents. It is
+// intentionally references-only: no hidden reasoning or live chat transcript
+// crosses the delegation boundary.
+type HandoffEnvelope struct {
+	Version             int       `json:"version"`
+	ID                  string    `json:"handoff_id"`
+	AgentID             string    `json:"agent_id"`
+	TaskID              string    `json:"task_id"`
+	StepID              string    `json:"step_id"`
+	Summary             string    `json:"summary"`
+	ArtifactIDs         []string  `json:"artifact_ids"`
+	EvidenceIDs         []string  `json:"evidence_ids"`
+	RecommendedNextStep []string  `json:"recommended_next_steps,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+
 // AgentReport is the immutable handoff from a bounded Worker invocation to
 // task state and verification. It records observed tool results, not a model
 // claim that task acceptance has been met.
