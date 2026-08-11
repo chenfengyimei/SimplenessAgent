@@ -9,6 +9,8 @@ export function CreateWorkspace(arg1:string,arg2:string):Promise<contracts.Works
 
 export function DataDir():Promise<string>;
 
+export function GetTaskSnapshot(arg1:string):Promise<app.TaskSnapshot>;
+
 export function ListTasks():Promise<Array<app.TaskSnapshot>>;
 
 export function ListWorkspaces():Promise<Array<contracts.Workspace>>;

@@ -14,6 +14,10 @@ export function DataDir() {
   return window['go']['main']['App']['DataDir']();
 }
 
+export function GetTaskSnapshot(arg1) {
+  return window['go']['main']['App']['GetTaskSnapshot'](arg1);
+}
+
 export function ListTasks() {
   return window['go']['main']['App']['ListTasks']();
 }

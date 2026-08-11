@@ -5,6 +5,7 @@ interface Window { go: { main: { App: {
   ListWorkspaces(): Promise<unknown[]>
   CreateWorkspace(name: string, path: string): Promise<unknown>
   CreateTask(workspaceID: string, title: string, goal: string): Promise<unknown>
+  GetTaskSnapshot(taskID: string): Promise<unknown>
 } } } }
 
 declare module '*.vue' {

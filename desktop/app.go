@@ -96,6 +96,14 @@ func (a *App) CreateTask(workspaceID, title, goal string) (app.TaskSnapshot, err
 	return service.GetTaskSnapshot(a.ctx, created.ID)
 }
 
+func (a *App) GetTaskSnapshot(taskID string) (app.TaskSnapshot, error) {
+	service, err := a.core()
+	if err != nil {
+		return app.TaskSnapshot{}, err
+	}
+	return service.GetTaskSnapshot(a.ctx, taskID)
+}
+
 func (a *App) DataDir() (string, error) {
 	service, err := a.core()
 	if err != nil {
