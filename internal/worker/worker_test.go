@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,7 +26,8 @@ func TestRunGoldenReadOnlyToolLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := worker.Run(context.Background(), Input{DeploymentID: "dep_1", Step: testStep(2), Context: "find the record"})
+	contextPackage := &contracts.ContextPackage{Version: contracts.SchemaVersion, ID: "ctx_1", Role: "EXECUTOR", TaskID: "task_1", StepID: "step_1", CompilerVersion: "1.0.0", Budget: contracts.ContextBudget{Limit: 20, Used: 3, Reserved: 4}, Sections: []contracts.ContextSection{{Type: "TASK", Content: "find the record", SourceRefs: []string{"task_1"}, EstimatedTokens: 3}}}
+	result, err := worker.Run(context.Background(), Input{DeploymentID: "dep_1", Step: testStep(2), Context: "ignored", ContextPackage: contextPackage})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,6 +36,23 @@ func TestRunGoldenReadOnlyToolLoop(t *testing.T) {
 	}
 	if len(provider.requests) != 2 || len(provider.requests[0].Tools) != 1 || provider.requests[0].Messages[0].Role != "system" || len(provider.requests[1].Messages) != 4 {
 		t.Fatalf("worker did not build the controlled loop: %#v", provider.requests)
+	}
+	if !strings.Contains(provider.requests[0].Messages[1].Content, "[TASK] [sources: task_1]") || strings.Contains(provider.requests[0].Messages[1].Content, "ignored") {
+		t.Fatalf("worker did not render bounded context package: %#v", provider.requests[0].Messages[1])
+	}
+}
+
+func TestRunRejectsInvalidContextPackage(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{{Text: "not reached"}}}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		return contracts.ToolResult{}, nil
+	})
+	worker, _ := New(provider, registry)
+	invalid := &contracts.ContextPackage{Version: contracts.SchemaVersion, ID: "ctx", Role: "EXECUTOR", TaskID: "task", StepID: "another-step", CompilerVersion: "1.0.0", Budget: contracts.ContextBudget{Limit: 10, Used: 0}}
+	_, err := worker.Run(context.Background(), Input{Step: testStep(1), ContextPackage: invalid})
+	assertCode(t, err, contracts.ErrInvalidInput)
+	if len(provider.requests) != 0 {
+		t.Fatal("invalid context must not reach provider")
 	}
 }
 

@@ -31,6 +31,11 @@
 - 新增版本化 `ContextPackage`、段落来源与 Token 预算契约，以及确定性 Context 编译器。
 - 编译器在预留输出 Token 后按优先级选择段落、限制同源段落数量、规范化来源并返回省略项；没有段落可装入预算时 fail-closed 为 `CONTEXT_OVERFLOW`。
 
+### 2026-08-11 Worker context package boundary
+
+- Worker 现可接收并优先渲染 `ContextPackage` 的已选段及来源；自由字符串上下文仅保留为兼容路径。
+- Worker 在调用模型前校验 Package 版本、任务/步骤绑定、段落 Token 总数和预算；无效或超限 Package 不会触发 Provider 请求。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。

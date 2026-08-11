@@ -25,9 +25,10 @@ type Worker struct {
 }
 
 type Input struct {
-	DeploymentID string
-	Step         contracts.StepSpec
-	Context      string
+	DeploymentID   string
+	Step           contracts.StepSpec
+	Context        string
+	ContextPackage *contracts.ContextPackage
 }
 
 type Result struct {
@@ -139,6 +140,34 @@ func validateInput(input Input) error {
 	if input.Step.Budget.MaxIterations <= 0 {
 		return contracts.NewError(contracts.ErrInvalidInput, "step max iterations must be positive")
 	}
+	if input.ContextPackage != nil {
+		if err := validateContextPackage(input.Step, *input.ContextPackage); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateContextPackage(step contracts.StepSpec, value contracts.ContextPackage) error {
+	if value.Version != contracts.SchemaVersion || strings.TrimSpace(value.ID) == "" || strings.TrimSpace(value.TaskID) == "" || strings.TrimSpace(value.Role) == "" || strings.TrimSpace(value.CompilerVersion) == "" {
+		return contracts.NewError(contracts.ErrInvalidInput, "context package is incomplete or uses an unsupported version")
+	}
+	if value.StepID != "" && value.StepID != step.StepID {
+		return contracts.NewError(contracts.ErrInvalidInput, "context package is bound to a different step")
+	}
+	if value.Budget.Limit <= 0 || value.Budget.Reserved < 0 || value.Budget.Used < 0 || value.Budget.Used > value.Budget.Limit-value.Budget.Reserved {
+		return contracts.NewError(contracts.ErrContextOverflow, "context package budget is invalid or exceeds its limit")
+	}
+	used := 0
+	for _, section := range value.Sections {
+		if strings.TrimSpace(section.Type) == "" || strings.TrimSpace(section.Content) == "" || section.EstimatedTokens <= 0 {
+			return contracts.NewError(contracts.ErrInvalidInput, "context package contains an invalid section")
+		}
+		used += section.EstimatedTokens
+	}
+	if used != value.Budget.Used {
+		return contracts.NewError(contracts.ErrInvalidInput, "context package used token count does not match its sections")
+	}
 	return nil
 }
 
@@ -166,7 +195,22 @@ func (w *Worker) allowedTools(step contracts.StepSpec) ([]contracts.ToolDefiniti
 }
 
 func renderAssignment(input Input) string {
-	return "Assigned step:\nID: " + input.Step.StepID + "\nTitle: " + input.Step.Title + "\nGoal: " + input.Step.Goal + "\nWorkspace scopes: " + strings.Join(input.Step.WorkspaceScopes, ", ") + "\n\nContext (untrusted task data):\n" + input.Context
+	return "Assigned step:\nID: " + input.Step.StepID + "\nTitle: " + input.Step.Title + "\nGoal: " + input.Step.Goal + "\nWorkspace scopes: " + strings.Join(input.Step.WorkspaceScopes, ", ") + "\n\nContext (untrusted task data):\n" + renderContext(input)
+}
+
+func renderContext(input Input) string {
+	if input.ContextPackage == nil {
+		return input.Context
+	}
+	parts := make([]string, 0, len(input.ContextPackage.Sections))
+	for _, section := range input.ContextPackage.Sections {
+		sources := ""
+		if len(section.SourceRefs) > 0 {
+			sources = " [sources: " + strings.Join(section.SourceRefs, ", ") + "]"
+		}
+		parts = append(parts, "["+section.Type+"]"+sources+"\n"+section.Content)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func exceeded(budget contracts.StepBudget, usage contracts.TokenUsage) bool {
