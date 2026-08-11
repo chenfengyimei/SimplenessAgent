@@ -28,6 +28,9 @@ const (
 	ErrModelUnavailable      ErrorCode = "MODEL_UNAVAILABLE"
 	ErrCapabilityUnsupported ErrorCode = "CAPABILITY_UNSUPPORTED"
 	ErrProviderInternal      ErrorCode = "PROVIDER_INTERNAL_ERROR"
+	ErrToolNotAllowed        ErrorCode = "TOOL_NOT_ALLOWED"
+	ErrRepeatedAction        ErrorCode = "REPEATED_ACTION"
+	ErrBudgetExceeded        ErrorCode = "BUDGET_EXCEEDED"
 )
 
 type Error struct {

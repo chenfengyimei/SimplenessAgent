@@ -21,9 +21,9 @@ func RegisterReadOnly(registry *Registry, root string) error {
 		definition contracts.ToolDefinition
 		handler    Handler
 	}{
-		{contracts.ToolDefinition{Version: 1, Name: "list_files", ToolVersion: "1.0.0", Description: "List files under an authorized workspace path.", RiskClass: contracts.RiskRead, RequiredCapabilities: []string{"fs.read"}, MaxOutputBytes: defaultMaxOutputBytes}, listFiles(root)},
-		{contracts.ToolDefinition{Version: 1, Name: "read_file", ToolVersion: "1.0.0", Description: "Read a UTF-8 text file inside the authorized workspace.", RiskClass: contracts.RiskRead, RequiredCapabilities: []string{"fs.read"}, MaxOutputBytes: defaultMaxOutputBytes}, readFile(root)},
-		{contracts.ToolDefinition{Version: 1, Name: "search_text", ToolVersion: "1.0.0", Description: "Search text files inside the authorized workspace.", RiskClass: contracts.RiskRead, RequiredCapabilities: []string{"fs.read"}, MaxOutputBytes: defaultMaxOutputBytes}, searchText(root)},
+		{contracts.ToolDefinition{Version: 1, Name: "list_files", ToolVersion: "1.0.0", Description: "List files under an authorized workspace path.", ParametersSchema: objectSchema(map[string]interface{}{"path": stringSchema(), "limit": integerSchema()}, []string{"path"}), RiskClass: contracts.RiskRead, RequiredCapabilities: []string{"fs.read"}, MaxOutputBytes: defaultMaxOutputBytes}, listFiles(root)},
+		{contracts.ToolDefinition{Version: 1, Name: "read_file", ToolVersion: "1.0.0", Description: "Read a UTF-8 text file inside the authorized workspace.", ParametersSchema: objectSchema(map[string]interface{}{"path": stringSchema()}, []string{"path"}), RiskClass: contracts.RiskRead, RequiredCapabilities: []string{"fs.read"}, MaxOutputBytes: defaultMaxOutputBytes}, readFile(root)},
+		{contracts.ToolDefinition{Version: 1, Name: "search_text", ToolVersion: "1.0.0", Description: "Search text files inside the authorized workspace.", ParametersSchema: objectSchema(map[string]interface{}{"query": stringSchema(), "path": stringSchema(), "limit": integerSchema()}, []string{"query", "path"}), RiskClass: contracts.RiskRead, RequiredCapabilities: []string{"fs.read"}, MaxOutputBytes: defaultMaxOutputBytes}, searchText(root)},
 	}
 	for _, item := range definitions {
 		if err := registry.Register(item.definition, item.handler); err != nil {
@@ -32,6 +32,16 @@ func RegisterReadOnly(registry *Registry, root string) error {
 	}
 	return nil
 }
+
+func objectSchema(properties map[string]interface{}, required []string) map[string]interface{} {
+	fields := make([]interface{}, len(required))
+	for index, name := range required {
+		fields[index] = name
+	}
+	return map[string]interface{}{"type": "object", "properties": properties, "required": fields, "additionalProperties": false}
+}
+func stringSchema() map[string]interface{}  { return map[string]interface{}{"type": "string"} }
+func integerSchema() map[string]interface{} { return map[string]interface{}{"type": "integer"} }
 
 func listFiles(root string) Handler {
 	return func(ctx context.Context, args map[string]interface{}) (contracts.ToolResult, error) {

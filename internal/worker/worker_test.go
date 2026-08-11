@@ -1,0 +1,161 @@
+package worker
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/xm/simplenessagent/internal/tool"
+	"github.com/xm/simplenessagent/pkg/contracts"
+)
+
+func TestRunGoldenReadOnlyToolLoop(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{
+		{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{"query":"agent"}`}}, Usage: contracts.TokenUsage{InputTokens: 4, OutputTokens: 3}},
+		{Text: "Found the requested record.", Usage: contracts.TokenUsage{InputTokens: 6, OutputTokens: 2}},
+	}}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(_ context.Context, args map[string]interface{}) (contracts.ToolResult, error) {
+		if args["query"] != "agent" {
+			t.Fatalf("unexpected arguments: %#v", args)
+		}
+		return contracts.ToolResult{Status: "SUCCEEDED", Summary: "one record"}, nil
+	})
+	worker, err := New(provider, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := worker.Run(context.Background(), Input{DeploymentID: "dep_1", Step: testStep(2), Context: "find the record"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "Found the requested record." || result.Iterations != 2 || result.Usage.InputTokens != 10 || len(result.ToolResults) != 1 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if len(provider.requests) != 2 || len(provider.requests[0].Tools) != 1 || provider.requests[0].Messages[0].Role != "system" || len(provider.requests[1].Messages) != 4 {
+		t.Fatalf("worker did not build the controlled loop: %#v", provider.requests)
+	}
+}
+
+func TestRunRejectsToolOutsideStepAllowlist(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "other", ArgumentsJSON: `{}`}}}}}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		t.Fatal("tool must not run")
+		return contracts.ToolResult{}, nil
+	})
+	if err := registry.Register(contracts.ToolDefinition{Name: "other", RiskClass: contracts.RiskRead, ParametersSchema: map[string]interface{}{"type": "object"}}, func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		t.Fatal("unallowed tool must not run")
+		return contracts.ToolResult{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	worker, _ := New(provider, registry)
+	_, err := worker.Run(context.Background(), Input{Step: testStep(1)})
+	assertCode(t, err, contracts.ErrToolNotAllowed)
+}
+
+func TestRunRejectsInvalidOrRepeatedToolActions(t *testing.T) {
+	t.Run("invalid schema", func(t *testing.T) {
+		provider := &scriptedProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{}`}}}}}
+		registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+			t.Fatal("invalid tool must not run")
+			return contracts.ToolResult{}, nil
+		})
+		worker, _ := New(provider, registry)
+		_, err := worker.Run(context.Background(), Input{Step: testStep(2)})
+		assertCode(t, err, contracts.ErrInvalidToolCall)
+	})
+	t.Run("repeated action", func(t *testing.T) {
+		response := contracts.ChatResponse{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{"query":"same"}`}}}
+		provider := &scriptedProvider{responses: []contracts.ChatResponse{response, response}}
+		calls := 0
+		registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+			calls++
+			return contracts.ToolResult{Status: "SUCCEEDED"}, nil
+		})
+		worker, _ := New(provider, registry)
+		result, err := worker.Run(context.Background(), Input{Step: testStep(2)})
+		assertCode(t, err, contracts.ErrRepeatedAction)
+		if calls != 1 || len(result.ToolResults) != 1 {
+			t.Fatalf("repeated action was invoked: %#v", result)
+		}
+	})
+}
+
+func TestRunStopsAtBudgetAndRejectsWriteTools(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{"query":"one"}`}}}}}
+	registry := testRegistry(t, contracts.RiskWrite, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		t.Fatal("write tool must not run")
+		return contracts.ToolResult{}, nil
+	})
+	worker, _ := New(provider, registry)
+	_, err := worker.Run(context.Background(), Input{Step: testStep(1)})
+	assertCode(t, err, contracts.ErrToolNotAllowed)
+
+	provider = &scriptedProvider{responses: []contracts.ChatResponse{{Text: "too many tokens", Usage: contracts.TokenUsage{OutputTokens: 3}}}}
+	registry = testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		return contracts.ToolResult{}, nil
+	})
+	worker, _ = New(provider, registry)
+	step := testStep(1)
+	step.Budget.MaxOutputTokens = 2
+	_, err = worker.Run(context.Background(), Input{Step: step})
+	assertCode(t, err, contracts.ErrBudgetExceeded)
+
+	provider = &scriptedProvider{delay: 10 * time.Millisecond, responses: []contracts.ChatResponse{{Text: "late"}}}
+	worker, _ = New(provider, registry)
+	step = testStep(1)
+	step.Budget.MaxDurationMS = 1
+	_, err = worker.Run(context.Background(), Input{Step: step})
+	assertCode(t, err, contracts.ErrRequestTimeout)
+}
+
+func testRegistry(t *testing.T, risk contracts.RiskClass, schema map[string]interface{}, handler tool.Handler) *tool.Registry {
+	t.Helper()
+	registry := tool.NewRegistry()
+	if err := registry.Register(contracts.ToolDefinition{Name: "lookup", RiskClass: risk, ParametersSchema: schema}, handler); err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+func strictQuerySchema() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}}, "required": []interface{}{"query"}, "additionalProperties": false}
+}
+func testStep(maxIterations int) contracts.StepSpec {
+	return contracts.StepSpec{StepID: "step_1", Title: "Lookup", Goal: "Find a record", AllowedTools: []string{"lookup"}, WorkspaceScopes: []string{"."}, Budget: contracts.StepBudget{MaxIterations: maxIterations}}
+}
+func assertCode(t *testing.T, err error, wanted contracts.ErrorCode) {
+	t.Helper()
+	var domain *contracts.Error
+	if !errors.As(err, &domain) || domain.Code != wanted {
+		t.Fatalf("wanted %s, got %#v", wanted, err)
+	}
+}
+
+type scriptedProvider struct {
+	responses []contracts.ChatResponse
+	requests  []contracts.ChatRequest
+	delay     time.Duration
+}
+
+func (p *scriptedProvider) Chat(_ context.Context, request contracts.ChatRequest) (contracts.ChatResponse, error) {
+	p.requests = append(p.requests, request)
+	if p.delay > 0 {
+		time.Sleep(p.delay)
+	}
+	if len(p.responses) == 0 {
+		return contracts.ChatResponse{}, errors.New("unexpected chat call")
+	}
+	response := p.responses[0]
+	p.responses = p.responses[1:]
+	return response, nil
+}
+func (p *scriptedProvider) ChatStream(_ context.Context, _ contracts.ChatRequest, _ contracts.StreamSink) error {
+	return errors.New("streaming is not used")
+}
+func (p *scriptedProvider) HealthCheck(_ context.Context) contracts.HealthStatus {
+	return contracts.HealthStatus{Healthy: true}
+}
+func (p *scriptedProvider) ProbeCapabilities(_ context.Context) contracts.CapabilitySnapshot {
+	return contracts.CapabilitySnapshot{ProbedAt: time.Now()}
+}

@@ -51,6 +51,7 @@ The initial framework is implemented and tested as a P0/P1 vertical slice:
 - Atomic content-addressed Artifact storage and evidence links.
 - A Mock Provider boundary and a CLI that drives the same Core an eventual Wails client will use.
 - An OpenAI-compatible `/v1` Provider adapter with normalized chat/tool calls, SSE streaming, cancellation and active capability probing. It is available to the future Worker, but intentionally not wired into the safe reconnaissance-only CLI yet.
+- A bounded read-only Agent Worker with a fixed executor contract, one-tool-at-a-time loop, allowlist/risk/Schema checks, repeated-action blocking and token/duration budgets. It remains decoupled from task-state persistence until the verifier boundary is complete.
 - Integration, recovery, state-machine, plan and path-boundary tests.
 
 The implemented runner intentionally executes a safe reconnaissance step only. Model-driven planning/execution and mutating tools are defined by contracts but remain disabled until their approvals, write-ahead intent records and recovery checks are complete.
