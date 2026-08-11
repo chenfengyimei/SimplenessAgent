@@ -56,6 +56,11 @@
 - 新增版本化本地 Skill manifest 与按需 `SKILL.md` 加载；发现操作只读取元数据，避免未选中 Skill 正文进入上下文。
 - Manifest 必须声明可用工具和工作区 Scope，未知工具、路径越界、符号链接、超大或多 JSON 文档均被拒绝；当前 App 仅提供只读工具表。
 
+### 2026-08-11 Worker Skill boundary
+
+- Worker 现可渲染显式选中的 Skill 指令；Skill 必须绑定已有 Context Package，指令 Token 计入其剩余预算。
+- Worker 在 Provider 调用前拒绝重复/不完整 Skill、超出 Step 工具白名单或 Scope 的声明，以及超预算的 Skill；Skill 不会改变实际 Tool 调用白名单。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。

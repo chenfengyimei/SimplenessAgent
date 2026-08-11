@@ -27,7 +27,8 @@ func TestRunGoldenReadOnlyToolLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	contextPackage := &contracts.ContextPackage{Version: contracts.SchemaVersion, ID: "ctx_1", Role: "EXECUTOR", TaskID: "task_1", StepID: "step_1", CompilerVersion: "1.0.0", Budget: contracts.ContextBudget{Limit: 20, Used: 3, Reserved: 4}, Sections: []contracts.ContextSection{{Type: "TASK", Content: "find the record", SourceRefs: []string{"task_1"}, EstimatedTokens: 3}}}
-	result, err := worker.Run(context.Background(), Input{DeploymentID: "dep_1", Step: testStep(2), Context: "ignored", ContextPackage: contextPackage})
+	skill := contracts.Skill{Manifest: contracts.SkillManifest{Version: contracts.SchemaVersion, Name: "review", SkillVersion: "1.0.0", Description: "Review evidence", AllowedTools: []string{"lookup"}, WorkspaceScopes: []string{"."}}, Instructions: "Check evidence before responding."}
+	result, err := worker.Run(context.Background(), Input{DeploymentID: "dep_1", Step: testStep(2), Context: "ignored", ContextPackage: contextPackage, Skills: []contracts.Skill{skill}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,6 +40,24 @@ func TestRunGoldenReadOnlyToolLoop(t *testing.T) {
 	}
 	if !strings.Contains(provider.requests[0].Messages[1].Content, "[TASK] [sources: task_1]") || strings.Contains(provider.requests[0].Messages[1].Content, "ignored") {
 		t.Fatalf("worker did not render bounded context package: %#v", provider.requests[0].Messages[1])
+	}
+	if !strings.Contains(provider.requests[0].Messages[1].Content, "[SKILL review]") {
+		t.Fatalf("worker did not render selected skill: %#v", provider.requests[0].Messages[1])
+	}
+}
+
+func TestRunRejectsSkillOutsideStepBoundary(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{{Text: "not reached"}}}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		return contracts.ToolResult{}, nil
+	})
+	worker, _ := New(provider, registry)
+	contextPackage := &contracts.ContextPackage{Version: contracts.SchemaVersion, ID: "ctx", Role: "EXECUTOR", TaskID: "task", StepID: "step_1", CompilerVersion: "1.0.0", Budget: contracts.ContextBudget{Limit: 20, Used: 0}}
+	outside := contracts.Skill{Manifest: contracts.SkillManifest{Version: contracts.SchemaVersion, Name: "writer", SkillVersion: "1.0.0", Description: "Write", AllowedTools: []string{"write_file"}, WorkspaceScopes: []string{"."}}, Instructions: "write"}
+	_, err := worker.Run(context.Background(), Input{Step: testStep(1), ContextPackage: contextPackage, Skills: []contracts.Skill{outside}})
+	assertCode(t, err, contracts.ErrToolNotAllowed)
+	if len(provider.requests) != 0 {
+		t.Fatal("invalid skill must not reach provider")
 	}
 }
 
