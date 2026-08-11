@@ -35,5 +35,9 @@
 - 新增模型驱动的受控单工具循环：固定执行合同、工具白名单、`READ` 风险限制、JSON Schema 校验、重复动作阻断及 Token/时长/迭代预算。
 - 新增 Mock Provider Golden Cases，覆盖正常只读闭环、越权工具、无效参数、重复调用、写工具与预算停止。
 
+### 2026-08-11 Model Planner
+
+- 新增只读模型 Planner：Plan JSON 候选解析、本地身份字段覆盖、DAG/预算/工具策略验证及 Golden Cases。
+
 [Unreleased]: https://github.com/chenfengyimei/SimplenessAgent/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/chenfengyimei/SimplenessAgent/releases/tag/v0.1.0
