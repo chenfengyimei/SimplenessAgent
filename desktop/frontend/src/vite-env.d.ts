@@ -1,6 +1,11 @@
 /// <reference types="vite/client" />
 
-interface Window { go: { main: { App: { ListTasks(): Promise<unknown[]> } } } }
+interface Window { go: { main: { App: {
+  ListTasks(): Promise<unknown[]>
+  ListWorkspaces(): Promise<unknown[]>
+  CreateWorkspace(name: string, path: string): Promise<unknown>
+  CreateTask(workspaceID: string, title: string, goal: string): Promise<unknown>
+} } } }
 
 declare module '*.vue' {
     import type {DefineComponent} from 'vue'

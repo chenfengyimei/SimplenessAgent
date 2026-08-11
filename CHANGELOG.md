@@ -112,6 +112,11 @@
 - Vue 工作台展示 Task/Step/Event 事实并提供刷新，不维护独立任务状态，也不暴露 Provider 凭据、工具执行或审批操作。
 - 已通过 Vue 生产构建、桌面子模块 `go test`/`go vet` 与 Windows Wails 生产构建验证。
 
+### 2026-08-11 Desktop Core commands
+
+- 桌面 Binding 新增工作区列表/创建和任务创建；所有命令都直接调用 App Service，复用路径边界、任务状态机和事件持久化。
+- Vue 工作台增加工作区与任务表单；前端只提交用户输入并读取刷新后的 Task Snapshot。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。
