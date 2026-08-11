@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "name": "foundation-v0",
+  "status": "implemented",
+  "cases": [
+    "workspace-bound-reconnaissance",
+    "task-event-recovery",
+    "plan-cycle-rejection",
+    "path-escape-rejection"
+  ]
+}

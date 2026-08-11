@@ -1,0 +1,19 @@
+# Build output and local state
+bin/
+dist/
+data/
+.cache/
+.verify-data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+coverage.out
+
+# Frontend dependencies
+frontend/node_modules/
+frontend/dist/
+
+# Local agent/application state
+.codely-cli/
+mem-log/

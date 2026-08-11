@@ -1,0 +1,295 @@
+// Package app composes domain services into the single local Agent Core used by
+// both the CLI and eventual Wails bindings.
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/xm/simplenessagent/internal/artifact"
+	"github.com/xm/simplenessagent/internal/eventstore"
+	"github.com/xm/simplenessagent/internal/plan"
+	"github.com/xm/simplenessagent/internal/storage"
+	"github.com/xm/simplenessagent/internal/task"
+	"github.com/xm/simplenessagent/internal/tool"
+	"github.com/xm/simplenessagent/internal/workspace"
+	"github.com/xm/simplenessagent/pkg/contracts"
+)
+
+type Service struct {
+	store         *storage.Store
+	artifactStore *artifact.Store
+	dataDir       string
+}
+
+type Config struct{ DataDir string }
+
+func Open(ctx context.Context, config Config) (*Service, error) {
+	if strings.TrimSpace(config.DataDir) == "" {
+		return nil, contracts.NewError(contracts.ErrInvalidInput, "data directory is required")
+	}
+	if err := os.MkdirAll(config.DataDir, 0o755); err != nil {
+		return nil, err
+	}
+	store, err := storage.Open(ctx, filepath.Join(config.DataDir, "simpleness.db"))
+	if err != nil {
+		return nil, err
+	}
+	artifactStore, err := artifact.NewStore(filepath.Join(config.DataDir, "artifacts"))
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	return &Service{store: store, artifactStore: artifactStore, dataDir: config.DataDir}, nil
+}
+
+func (s *Service) Close() error    { return s.store.Close() }
+func (s *Service) DataDir() string { return s.dataDir }
+
+func (s *Service) CreateWorkspace(ctx context.Context, name, path string) (contracts.Workspace, error) {
+	root, err := workspace.NormalizeRoot(path)
+	if err != nil {
+		return contracts.Workspace{}, err
+	}
+	if strings.TrimSpace(name) == "" {
+		name = filepath.Base(root)
+	}
+	now := time.Now().UTC()
+	item := contracts.Workspace{ID: task.NewID("ws"), Version: contracts.SchemaVersion, Name: name, RootPath: root, CreatedAt: now, UpdatedAt: now}
+	if err = s.store.CreateWorkspace(ctx, item); err != nil {
+		return contracts.Workspace{}, err
+	}
+	return item, nil
+}
+func (s *Service) ListWorkspaces(ctx context.Context) ([]contracts.Workspace, error) {
+	return s.store.ListWorkspaces(ctx)
+}
+func (s *Service) ListTasks(ctx context.Context, workspaceID string) ([]contracts.Task, error) {
+	return s.store.ListTasks(ctx, workspaceID)
+}
+
+type CreateTaskInput struct {
+	WorkspaceID, Title, Goal string
+	Constraints              []contracts.Constraint
+	AcceptanceCriteria       []contracts.AcceptanceCriterion
+	Budget                   contracts.TaskBudget
+}
+
+func (s *Service) CreateTask(ctx context.Context, input CreateTaskInput) (contracts.Task, contracts.PlanVersion, error) {
+	if _, err := s.store.GetWorkspace(ctx, input.WorkspaceID); err != nil {
+		return contracts.Task{}, contracts.PlanVersion{}, err
+	}
+	if strings.TrimSpace(input.Title) == "" || strings.TrimSpace(input.Goal) == "" {
+		return contracts.Task{}, contracts.PlanVersion{}, contracts.NewError(contracts.ErrInvalidInput, "task title and goal are required")
+	}
+	if len(input.AcceptanceCriteria) == 0 {
+		input.AcceptanceCriteria = []contracts.AcceptanceCriterion{{ID: "ac_evidence", Type: contracts.AcceptanceEvidenceExists, Description: "侦察报告已生成", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}
+	}
+	if input.Budget.MaxSteps == 0 {
+		input.Budget.MaxSteps = 8
+	}
+	if input.Budget.MaxDurationMS == 0 {
+		input.Budget.MaxDurationMS = int64((30 * time.Minute).Milliseconds())
+	}
+	if input.Budget.MaxReplans == 0 {
+		input.Budget.MaxReplans = 2
+	}
+	now := time.Now().UTC()
+	spec := contracts.TaskSpec{Version: contracts.SchemaVersion, TaskID: task.NewID("tsk"), WorkspaceID: input.WorkspaceID, Title: input.Title, Goal: input.Goal, Constraints: input.Constraints, AcceptanceCriteria: input.AcceptanceCriteria, Budget: input.Budget, CreatedAt: now}
+	item := contracts.Task{ID: spec.TaskID, Version: contracts.SchemaVersion, WorkspaceID: spec.WorkspaceID, Title: spec.Title, Goal: spec.Goal, Status: contracts.TaskDraft, Spec: spec, CreatedAt: now, UpdatedAt: now}
+	event, err := s.newEvent(ctx, item.ID, "TASK_CREATED", map[string]interface{}{"title": item.Title})
+	if err != nil {
+		return contracts.Task{}, contracts.PlanVersion{}, err
+	}
+	if err = s.store.CreateTask(ctx, item, event); err != nil {
+		return contracts.Task{}, contracts.PlanVersion{}, err
+	}
+	if err = s.transitionTask(ctx, item.ID, contracts.TaskDraft, contracts.TaskPlanning, "TASK_STATUS_CHANGED"); err != nil {
+		return contracts.Task{}, contracts.PlanVersion{}, err
+	}
+	planVersion := minimalPlan(item)
+	validation := plan.Validate(planVersion, item.Spec.Budget.MaxSteps)
+	if !validation.Valid() {
+		return contracts.Task{}, contracts.PlanVersion{}, contracts.NewError(contracts.ErrPlanInvalid, strings.Join(validation.Errors, "; "))
+	}
+	event, err = s.newEvent(ctx, item.ID, "PLAN_CREATED", map[string]interface{}{"plan_id": planVersion.PlanID, "revision": planVersion.Revision})
+	if err != nil {
+		return contracts.Task{}, contracts.PlanVersion{}, err
+	}
+	if err = s.store.CreatePlan(ctx, planVersion, event); err != nil {
+		return contracts.Task{}, contracts.PlanVersion{}, err
+	}
+	if err = s.transitionTask(ctx, item.ID, contracts.TaskPlanning, contracts.TaskReady, "TASK_STATUS_CHANGED"); err != nil {
+		return contracts.Task{}, contracts.PlanVersion{}, err
+	}
+	item.Status = contracts.TaskReady
+	item.UpdatedAt = time.Now().UTC()
+	return item, planVersion, nil
+}
+
+func minimalPlan(item contracts.Task) contracts.PlanVersion {
+	return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: "先在只读边界内侦察工作区并保存可验证报告", CreatedByAgent: "core-minimal-planner", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: "侦察工作区", Goal: "收集授权工作区的文件清单，形成可复核的侦察报告", AllowedTools: []string{"list_files", "read_file", "search_text"}, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "recon_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_recon", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的侦察报告", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}, Risk: contracts.RiskRead, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 3, MaxDurationMS: int64((5 * time.Minute).Milliseconds()), MaxInputTokens: 8000, MaxOutputTokens: 2000}, ExecutionMode: "DETERMINISTIC", PreferredRole: "RECON"}}}
+}
+
+func (s *Service) RunTask(ctx context.Context, taskID string) (TaskSnapshot, error) {
+	item, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if item.Status != contracts.TaskReady {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "only READY tasks can start in the foundation runtime")
+	}
+	activePlan, err := s.store.GetLatestPlan(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	states, err := s.store.GetSteps(ctx, activePlan.PlanID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	statusByID := map[string]contracts.StepStatus{}
+	for _, state := range states {
+		statusByID[state.StepID] = state.Status
+	}
+	ready := plan.ReadySteps(activePlan, statusByID)
+	if len(ready) != 1 {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrPlanInvalid, "foundation runner requires exactly one ready step")
+	}
+	if err = s.transitionTask(ctx, taskID, contracts.TaskReady, contracts.TaskRunning, "TASK_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	stepID := ready[0]
+	if err = s.transitionStep(ctx, taskID, stepID, contracts.StepPending, contracts.StepReady, "STEP_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionStep(ctx, taskID, stepID, contracts.StepReady, contracts.StepRunning, "STEP_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.runReconnaissance(ctx, item, stepID); err != nil {
+		_ = s.transitionTask(ctx, taskID, contracts.TaskRunning, contracts.TaskFailed, "TASK_STATUS_CHANGED")
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionStep(ctx, taskID, stepID, contracts.StepRunning, contracts.StepVerifying, "STEP_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionStep(ctx, taskID, stepID, contracts.StepVerifying, contracts.StepCompleted, "STEP_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionTask(ctx, taskID, contracts.TaskRunning, contracts.TaskVerifying, "TASK_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionTask(ctx, taskID, contracts.TaskVerifying, contracts.TaskCompleted, "TASK_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	snapshot, err := s.GetTaskSnapshot(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if len(snapshot.Events) > 0 {
+		if err = s.store.SaveCheckpoint(ctx, task.NewID("chk"), taskID, snapshot.Events[len(snapshot.Events)-1].Sequence, snapshot); err != nil {
+			return TaskSnapshot{}, err
+		}
+	}
+	return snapshot, nil
+}
+
+func (s *Service) runReconnaissance(ctx context.Context, item contracts.Task, stepID string) error {
+	workspaceItem, err := s.store.GetWorkspace(ctx, item.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	registry := tool.NewRegistry()
+	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
+		return err
+	}
+	definition, ok := registry.Definition("list_files")
+	if !ok {
+		return fmt.Errorf("list_files tool is not registered")
+	}
+	handler := registryHandler(registry, "list_files")
+	result, err := handler(ctx, map[string]interface{}{"path": ".", "limit": 200})
+	if err != nil {
+		return err
+	}
+	if result.Status != "SUCCEEDED" {
+		return contracts.NewError(contracts.ErrInvalidInput, result.Summary)
+	}
+	report := map[string]interface{}{"version": contracts.SchemaVersion, "workspace_id": workspaceItem.ID, "workspace_root": workspaceItem.RootPath, "task_id": item.ID, "step_id": stepID, "generated_at": time.Now().UTC(), "tool_definition": definition, "result": result}
+	encoded, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	artifactItem, err := s.artifactStore.Put("RECON_REPORT", "application/json", "工作区侦察报告", item.ID, stepID, encoded)
+	if err != nil {
+		return err
+	}
+	if err = s.store.SaveArtifact(ctx, artifactItem); err != nil {
+		return err
+	}
+	evidence := contracts.Evidence{ID: task.NewID("evd"), Kind: "RECON_REPORT", Claim: "已在授权工作区内生成侦察报告", ArtifactID: artifactItem.ID, Location: "$", VerificationMethod: "DETERMINISTIC_TOOL_RESULT", VerifiedAt: time.Now().UTC(), Confidence: 1}
+	if err = s.store.SaveEvidence(ctx, evidence); err != nil {
+		return err
+	}
+	return s.store.AttachStepResults(ctx, stepID, []string{artifactItem.ID}, []string{evidence.ID})
+}
+
+func registryHandler(registry *tool.Registry, name string) tool.Handler { // narrow access preserves Registry's lookup boundary.
+	definition, _ := registry.Definition(name)
+	_ = definition
+	// The handler registration is deliberately private to package tool; use the
+	// first-party executor facade until the worker loop owns invocation.
+	return tool.Invoke(registry, name)
+}
+
+type TaskSnapshot struct {
+	Task   contracts.Task            `json:"task"`
+	Plan   contracts.PlanVersion     `json:"plan"`
+	Steps  []contracts.StepRuntime   `json:"steps"`
+	Events []contracts.EventEnvelope `json:"events"`
+}
+
+func (s *Service) GetTaskSnapshot(ctx context.Context, taskID string) (TaskSnapshot, error) {
+	item, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	activePlan, err := s.store.GetLatestPlan(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	steps, err := s.store.GetSteps(ctx, activePlan.PlanID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	events, err := s.store.Events(ctx, taskID, 0)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	return TaskSnapshot{Task: item, Plan: activePlan, Steps: steps, Events: events}, nil
+}
+
+func (s *Service) newEvent(ctx context.Context, taskID, eventType string, payload map[string]interface{}) (contracts.EventEnvelope, error) {
+	return eventstore.NewTaskEvent(ctx, s.store, taskID, eventType, payload)
+}
+func (s *Service) transitionTask(ctx context.Context, taskID string, from, to contracts.TaskStatus, eventType string) error {
+	if err := task.ValidateTransition(from, to); err != nil {
+		return err
+	}
+	event, err := s.newEvent(ctx, taskID, eventType, map[string]interface{}{"from": from, "to": to})
+	if err != nil {
+		return err
+	}
+	return s.store.TransitionTask(ctx, taskID, from, to, event)
+}
+func (s *Service) transitionStep(ctx context.Context, taskID, stepID string, from, to contracts.StepStatus, eventType string) error {
+	event, err := s.newEvent(ctx, taskID, eventType, map[string]interface{}{"step_id": stepID, "from": from, "to": to})
+	if err != nil {
+		return err
+	}
+	return s.store.TransitionStep(ctx, stepID, from, to, event)
+}
