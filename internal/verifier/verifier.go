@@ -3,7 +3,10 @@
 package verifier
 
 import (
+	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -53,6 +56,9 @@ func verifyCriterion(criterion contracts.AcceptanceCriterion, evidence []contrac
 	if criterion.Type == contracts.AcceptanceFileExists {
 		return verifyFile(criterion, root, check)
 	}
+	if criterion.Type == contracts.AcceptanceDiffContains {
+		return verifyDiff(criterion, root, check)
+	}
 	if criterion.Type != contracts.AcceptanceEvidenceExists {
 		check.Reason = "acceptance type is not implemented by deterministic verifier"
 		return check
@@ -73,6 +79,43 @@ func verifyCriterion(criterion contracts.AcceptanceCriterion, evidence []contrac
 	} else {
 		check.Reason = "no verified matching evidence exists"
 	}
+	return check
+}
+
+func verifyDiff(criterion contracts.AcceptanceCriterion, root string, check Check) Check {
+	path, _ := criterion.Spec["path"].(string)
+	contains, _ := criterion.Spec["contains"].(string)
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" || strings.TrimSpace(contains) == "" {
+		check.Reason = "diff acceptance criterion requires workspace root, spec.path and spec.contains"
+		return check
+	}
+	target, err := workspace.ResolveWithin(root, path)
+	if err != nil {
+		check.Reason = "diff path is outside the authorized workspace"
+		return check
+	}
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative == "." || filepath.IsAbs(relative) {
+		check.Reason = "diff acceptance criterion requires a workspace file path"
+		return check
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "git", "-C", root, "diff", "--no-ext-diff", "--no-color", "--unified=0", "HEAD", "--", relative).Output()
+	if ctx.Err() != nil {
+		check.Reason = "git diff verification timed out"
+		return check
+	}
+	if err != nil {
+		check.Reason = "git diff verification failed"
+		return check
+	}
+	if !strings.Contains(string(output), contains) {
+		check.Reason = "workspace diff does not contain the expected text"
+		return check
+	}
+	check.Passed = true
+	check.Reason = "workspace diff contains the expected text"
 	return check
 }
 

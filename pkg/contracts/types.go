@@ -65,6 +65,7 @@ type AcceptanceType string
 const (
 	AcceptanceEvidenceExists AcceptanceType = "EVIDENCE_EXISTS"
 	AcceptanceFileExists     AcceptanceType = "FILE_EXISTS"
+	AcceptanceDiffContains   AcceptanceType = "DIFF_CONTAINS"
 	AcceptanceCommand        AcceptanceType = "COMMAND"
 )
 

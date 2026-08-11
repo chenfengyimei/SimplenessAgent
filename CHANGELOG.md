@@ -36,6 +36,11 @@
 - Worker 现可接收并优先渲染 `ContextPackage` 的已选段及来源；自由字符串上下文仅保留为兼容路径。
 - Worker 在调用模型前校验 Package 版本、任务/步骤绑定、段落 Token 总数和预算；无效或超限 Package 不会触发 Provider 请求。
 
+### 2026-08-11 Diff acceptance verifier
+
+- 新增 `DIFF_CONTAINS` 接受条件：在授权工作区内验证指定文件的 `git diff HEAD` 是否包含期望文本。
+- diff 调用不经过 shell，禁用外部 diff 与彩色输出，并设置固定超时；非 Git 工作区、路径越界、超时和不匹配均 fail-closed。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。
