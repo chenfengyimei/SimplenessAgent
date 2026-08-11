@@ -26,6 +26,16 @@ go run ./cmd/simpleness -- --data-dir .\data task run <task-id>
 
 命令输出均为 JSON，便于未来桌面端、自动化测试和外部客户端复用同一份事实数据。
 
+使用 OpenAI-compatible 模型工作流时，仅在当前进程环境设置 `SIMPLENESS_API_KEY`（本地无认证 Runtime 可不设置），随后执行：
+
+```powershell
+go run ./cmd/simpleness -- --data-dir .\data deployment add --name local --endpoint http://127.0.0.1:8080/v1 --model model-id
+go run ./cmd/simpleness -- --data-dir .\data task plan --deployment <deployment-id> <task-id>
+go run ./cmd/simpleness -- --data-dir .\data task run-model --deployment <deployment-id> <task-id>
+```
+
+数据库只保存可选的凭据引用，不保存 API Key。
+
 ## 当前已实现
 
 - 版本化领域契约与 SQLite/WAL 迁移。
@@ -50,8 +60,8 @@ The initial framework is implemented and tested as a P0/P1 vertical slice:
 - Workspace-bound, read-only `list_files`, `read_file` and `search_text` tools.
 - Atomic content-addressed Artifact storage and evidence links.
 - A Mock Provider boundary and a CLI that drives the same Core an eventual Wails client will use.
-- An OpenAI-compatible `/v1` Provider adapter with normalized chat/tool calls, SSE streaming, cancellation and active capability probing. It is available to the future Worker, but intentionally not wired into the safe reconnaissance-only CLI yet.
-- A bounded read-only Agent Worker with a fixed executor contract, one-tool-at-a-time loop, allowlist/risk/Schema checks, repeated-action blocking and token/duration budgets. It remains decoupled from task-state persistence until the verifier boundary is complete.
+- An OpenAI-compatible `/v1` Provider adapter with normalized chat/tool calls, SSE streaming, cancellation and active capability probing. The CLI resolves configured OpenAI-compatible deployments at runtime without persisting API keys.
+- A bounded read-only Agent Worker with a fixed executor contract, one-tool-at-a-time loop, allowlist/risk/Schema checks, repeated-action blocking and token/duration budgets. The App Service and CLI persist an `AGENT_REPORT` Artifact/Evidence before the deterministic verifier decides completion.
 - Integration, recovery, state-machine, plan and path-boundary tests.
 
 The implemented runner intentionally executes a safe reconnaissance step only. Model-driven planning/execution and mutating tools are defined by contracts but remain disabled until their approvals, write-ahead intent records and recovery checks are complete.
@@ -75,5 +85,15 @@ The adapter is a library boundary, configured by the eventual Deployment service
 & 'C:\Program Files\Go\bin\go.exe' run ./cmd/simpleness -- --data-dir .\data task create --workspace <workspace-id> --title 'Inspect project' --goal 'Create a verifiable workspace reconnaissance report'
 & 'C:\Program Files\Go\bin\go.exe' run ./cmd/simpleness -- --data-dir .\data task run <task-id>
 ```
+
+For an OpenAI-compatible model workflow, set `SIMPLENESS_API_KEY` only in the current environment (leave it unset for local unauthenticated runtimes), then:
+
+```powershell
+& 'C:\Program Files\Go\bin\go.exe' run ./cmd/simpleness -- --data-dir .\data deployment add --name local --endpoint http://127.0.0.1:8080/v1 --model model-id
+& 'C:\Program Files\Go\bin\go.exe' run ./cmd/simpleness -- --data-dir .\data task plan --deployment <deployment-id> <task-id>
+& 'C:\Program Files\Go\bin\go.exe' run ./cmd/simpleness -- --data-dir .\data task run-model --deployment <deployment-id> <task-id>
+```
+
+The database stores only an optional credential reference, never the API key.
 
 All command output is JSON so a future desktop client, integration tests and automation can consume the same views.

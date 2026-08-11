@@ -66,6 +66,11 @@
 - 新增 App Service `RunModelStep`：为唯一就绪的 `READ` Step 创建受预算上下文、调用受控 Worker、持久化 `AGENT_REPORT` Artifact 与 Evidence 后才进入任务验证。
 - 该入口复用 Task/Step 状态机、Checkpoint 和 FinalReport；Worker 失败会将运行中的 Step/Task 标记失败，写工具仍不会注册到模型执行环境。
 
+### 2026-08-11 Model CLI workflow
+
+- CLI 新增 `deployment add|list|probe`、`task plan --deployment` 与 `task run-model --deployment`，将持久化 Deployment、模型规划和受控单步骤执行接入同一 JSON CLI。
+- API Key 只从运行时 `SIMPLENESS_API_KEY` 读取；持久化 Deployment 只可记录不透明凭据引用。CLI 同时兼容 `go run ... -- --data-dir ...` 调用形式。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。
