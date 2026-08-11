@@ -21,6 +21,11 @@
 - 新增版本化 Checkpoint 读取模型和运行边界的自动 Checkpoint；同一事件序列只保存一次快照。
 - 新增显式恢复操作：遗留 `RUNNING` 任务先保存观测到的状态，再原子转为 `PAUSED` 并记录 `TASK_RECOVERY_PAUSED`；不会自动重放步骤或副作用。
 
+### 2026-08-11 Local replanning
+
+- 新增 `ReplanTask`：仅允许恢复后处于 `PAUSED` 的任务创建新的模型 Plan Revision，并受 Task 的 `MaxReplans` 预算限制。
+- 重规划上下文只包含前一版 Plan、持久化步骤状态和显式原因；模型不得复用旧 Step ID，Plan 以 `PLAN_REPLANNED` 审计后才将任务转回 `READY`。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。

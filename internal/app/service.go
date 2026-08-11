@@ -171,6 +171,74 @@ func (s *Service) GeneratePlan(ctx context.Context, taskID, deploymentID string)
 	return candidate, nil
 }
 
+// ReplanTask creates a new, locally validated plan revision for a recovered
+// PAUSED task. It deliberately leaves old steps immutable and gives the model
+// only their persisted status, not a tool replay mechanism.
+func (s *Service) ReplanTask(ctx context.Context, taskID, deploymentID, reason string) (contracts.PlanVersion, error) {
+	if strings.TrimSpace(reason) == "" {
+		return contracts.PlanVersion{}, contracts.NewError(contracts.ErrInvalidInput, "replan reason is required")
+	}
+	if s.resolveProvider == nil {
+		return contracts.PlanVersion{}, contracts.NewError(contracts.ErrCapabilityUnsupported, "no provider resolver is configured")
+	}
+	item, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	if item.Status != contracts.TaskPaused {
+		return contracts.PlanVersion{}, contracts.NewError(contracts.ErrInvalidTransition, "local replan requires a PAUSED task")
+	}
+	previous, err := s.store.GetLatestPlan(ctx, item.ID)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	if item.Spec.Budget.MaxReplans >= 0 && previous.Revision-1 >= item.Spec.Budget.MaxReplans {
+		return contracts.PlanVersion{}, contracts.NewError(contracts.ErrBudgetExceeded, "task replan budget is exhausted")
+	}
+	states, err := s.store.GetSteps(ctx, previous.PlanID)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	deployment, err := s.store.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	if !deployment.Enabled {
+		return contracts.PlanVersion{}, contracts.NewError(contracts.ErrPermissionDenied, "deployment is disabled")
+	}
+	provider, err := s.resolveProvider(deployment)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	workspaceItem, err := s.store.GetWorkspace(ctx, item.WorkspaceID)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	registry := tool.NewRegistry()
+	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	plannerService, err := planner.New(provider)
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	candidate, err := plannerService.Create(ctx, planner.Input{DeploymentID: deployment.ID, Task: item, AvailableTools: registry.Definitions(), Revision: previous.Revision + 1, ParentPlanID: previous.PlanID, ReplanContext: &planner.ReplanContext{Reason: reason, PreviousPlan: previous, PreviousSteps: states}})
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	event, err := s.newEvent(ctx, item.ID, "PLAN_REPLANNED", map[string]interface{}{"plan_id": candidate.PlanID, "revision": candidate.Revision, "parent_plan_id": candidate.ParentPlanID, "reason": reason})
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	if err = s.store.CreatePlan(ctx, candidate, event); err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	if err = s.transitionTask(ctx, item.ID, contracts.TaskPaused, contracts.TaskReady, "TASK_STATUS_CHANGED"); err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	return candidate, nil
+}
+
 type CreateTaskInput struct {
 	WorkspaceID, Title, Goal string
 	Constraints              []contracts.Constraint

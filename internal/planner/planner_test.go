@@ -41,6 +41,27 @@ func TestCreateRejectsInvalidPlanAndWriteTool(t *testing.T) {
 	})
 }
 
+func TestCreateLocalReplanUsesNewStepIDs(t *testing.T) {
+	previous := contracts.PlanVersion{PlanID: "pln_previous", Steps: []contracts.StepSpec{{StepID: "inspect"}}}
+	response := `{"summary":"replan","steps":[{"version":1,"step_id":"inspect","title":"Inspect","goal":"Read files","allowed_tools":["list_files"],"workspace_scopes":["."],"acceptance_criteria":[{"id":"evidence","type":"EVIDENCE_EXISTS","description":"report","spec":{}}],"risk":"READ","budget":{"max_attempts":1,"max_iterations":2,"max_duration_ms":1000,"max_input_tokens":10,"max_output_tokens":10}}]}`
+	planner, err := New(&fakeProvider{response: response})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = planner.Create(context.Background(), Input{DeploymentID: "dep", Task: testTask(), AvailableTools: []contracts.ToolDefinition{readTool()}, Revision: 2, ParentPlanID: previous.PlanID, ReplanContext: &ReplanContext{Reason: "interrupted", PreviousPlan: previous}})
+	assertPlanError(t, err)
+}
+
+func TestCreateLocalReplanNormalizesReason(t *testing.T) {
+	previous := contracts.PlanVersion{PlanID: "pln_previous", Steps: []contracts.StepSpec{{StepID: "old"}}}
+	response := `{"summary":"replan","reason":"UNTRUSTED","steps":[{"version":1,"step_id":"new","title":"Inspect","goal":"Read files","allowed_tools":["list_files"],"workspace_scopes":["."],"acceptance_criteria":[{"id":"evidence","type":"EVIDENCE_EXISTS","description":"report","spec":{}}],"risk":"READ","budget":{"max_attempts":1,"max_iterations":2,"max_duration_ms":1000,"max_input_tokens":10,"max_output_tokens":10}}]}`
+	planner, _ := New(&fakeProvider{response: response})
+	created, err := planner.Create(context.Background(), Input{DeploymentID: "dep", Task: testTask(), AvailableTools: []contracts.ToolDefinition{readTool()}, Revision: 2, ParentPlanID: previous.PlanID, ReplanContext: &ReplanContext{Reason: "interrupted", PreviousPlan: previous}})
+	if err != nil || created.Reason != "LOCAL_REPLAN" {
+		t.Fatal(created, err)
+	}
+}
+
 func readTool() contracts.ToolDefinition {
 	return contracts.ToolDefinition{Name: "list_files", RiskClass: contracts.RiskRead, ParametersSchema: map[string]interface{}{"type": "object"}}
 }

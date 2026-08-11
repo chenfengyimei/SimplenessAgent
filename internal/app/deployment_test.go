@@ -157,6 +157,51 @@ func TestRecoverRunningTaskPausesFromCheckpoint(t *testing.T) {
 	}
 }
 
+func TestReplanPausedTaskPersistsLocalRevision(t *testing.T) {
+	ctx := context.Background()
+	response := `{"summary":"replan","steps":[{"version":1,"step_id":"new-inspect","title":"Inspect","goal":"Read files","allowed_tools":["list_files"],"workspace_scopes":["."],"acceptance_criteria":[{"id":"evidence","type":"EVIDENCE_EXISTS","description":"report","spec":{}}],"risk":"READ","budget":{"max_attempts":1,"max_iterations":2,"max_duration_ms":1000,"max_input_tokens":10,"max_output_tokens":10}}]}`
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) {
+		return mock.Provider{Response: response}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, initial, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "replan", Goal: "replan safely"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.transitionTask(ctx, created.ID, contracts.TaskReady, contracts.TaskRunning, "TASK_STATUS_CHANGED"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.RecoverRunningTask(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	replanned, err := service.ReplanTask(ctx, created.ID, deployment.ID, "interrupted before execution")
+	if err != nil || replanned.Revision != 2 || replanned.ParentPlanID != initial.PlanID || replanned.Reason != "LOCAL_REPLAN" {
+		t.Fatal(replanned, err)
+	}
+	snapshot, err := service.GetTaskSnapshot(ctx, created.ID)
+	if err != nil || snapshot.Task.Status != contracts.TaskReady || snapshot.Plan.PlanID != replanned.PlanID {
+		t.Fatal(snapshot, err)
+	}
+	found := false
+	for _, event := range snapshot.Events {
+		found = found || event.EventType == "PLAN_REPLANNED"
+	}
+	if !found {
+		t.Fatal("local replan event was not persisted")
+	}
+}
+
 func contentHash(value []byte) string {
 	digest := sha256.Sum256(value)
 	return "sha256:" + hex.EncodeToString(digest[:])
