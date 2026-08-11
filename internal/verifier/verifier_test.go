@@ -67,3 +67,26 @@ func TestVerifyFileExistsWithinWorkspace(t *testing.T) {
 		t.Fatal("path escape must fail")
 	}
 }
+
+func TestVerifyCommandAllowsBoundedGoTestOnly(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/verification\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "sample_test.go"), []byte("package verification\n\nimport \"testing\"\n\nfunc TestPass(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	task := contracts.Task{ID: "t", Spec: contracts.TaskSpec{AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "command", Type: contracts.AcceptanceCommand, Spec: map[string]interface{}{"runner": "go_test", "packages": []string{"."}, "timeout_ms": float64(30000)}}}}}
+	if !VerifyInWorkspace(task, contracts.PlanVersion{}, nil, root).Passed {
+		t.Fatal("bounded go test criterion should pass")
+	}
+	task.Spec.AcceptanceCriteria[0].Spec["runner"] = "powershell"
+	if VerifyInWorkspace(task, contracts.PlanVersion{}, nil, root).Passed {
+		t.Fatal("unapproved runner must fail")
+	}
+	task.Spec.AcceptanceCriteria[0].Spec["runner"] = "go_test"
+	task.Spec.AcceptanceCriteria[0].Spec["packages"] = []string{"../outside"}
+	if VerifyInWorkspace(task, contracts.PlanVersion{}, nil, root).Passed {
+		t.Fatal("package escape must fail")
+	}
+}

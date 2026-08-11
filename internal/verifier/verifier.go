@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -59,6 +60,9 @@ func verifyCriterion(criterion contracts.AcceptanceCriterion, evidence []contrac
 	if criterion.Type == contracts.AcceptanceDiffContains {
 		return verifyDiff(criterion, root, check)
 	}
+	if criterion.Type == contracts.AcceptanceCommand {
+		return verifyCommand(criterion, root, check)
+	}
 	if criterion.Type != contracts.AcceptanceEvidenceExists {
 		check.Reason = "acceptance type is not implemented by deterministic verifier"
 		return check
@@ -80,6 +84,143 @@ func verifyCriterion(criterion contracts.AcceptanceCriterion, evidence []contrac
 		check.Reason = "no verified matching evidence exists"
 	}
 	return check
+}
+
+const (
+	defaultCommandTimeout = 30 * time.Second
+	maxCommandTimeout     = 60 * time.Second
+	maxCommandOutputBytes = 1 << 20
+)
+
+// verifyCommand deliberately supports a small, declarative allowlist instead
+// of a shell command. A model therefore cannot turn an acceptance criterion
+// into arbitrary process execution.
+func verifyCommand(criterion contracts.AcceptanceCriterion, root string, check Check) Check {
+	if strings.TrimSpace(root) == "" {
+		check.Reason = "command acceptance criterion requires a workspace root"
+		return check
+	}
+	runner, _ := criterion.Spec["runner"].(string)
+	packages, ok := commandPackages(criterion.Spec["packages"])
+	if !ok {
+		check.Reason = "command acceptance criterion requires safe spec.packages"
+		return check
+	}
+	timeout, ok := commandTimeout(criterion.Spec["timeout_ms"])
+	if !ok {
+		check.Reason = "command acceptance criterion has an invalid timeout_ms"
+		return check
+	}
+	var args []string
+	switch runner {
+	case "go_test":
+		args = append([]string{"test"}, packages...)
+	case "go_vet":
+		args = append([]string{"vet"}, packages...)
+	default:
+		check.Reason = "command runner is not permitted"
+		return check
+	}
+	goExecutable := filepath.Join(runtime.GOROOT(), "bin", "go")
+	if runtime.GOROOT() == "" {
+		check.Reason = "trusted Go runtime is unavailable"
+		return check
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	output := &limitedBuffer{limit: maxCommandOutputBytes}
+	command := exec.CommandContext(ctx, goExecutable, args...)
+	command.Dir = root
+	command.Stdout = output
+	command.Stderr = output
+	err := command.Run()
+	if ctx.Err() != nil {
+		check.Reason = "command verification timed out"
+		return check
+	}
+	if output.exceeded {
+		check.Reason = "command verification exceeded output limit"
+		return check
+	}
+	if err != nil {
+		check.Reason = "command verification failed"
+		return check
+	}
+	contains, _ := criterion.Spec["stdout_contains"].(string)
+	if strings.TrimSpace(contains) != "" && !strings.Contains(output.String(), contains) {
+		check.Reason = "command output does not contain the expected text"
+		return check
+	}
+	check.Passed = true
+	check.Reason = "permitted command completed successfully"
+	return check
+}
+
+func commandPackages(value interface{}) ([]string, bool) {
+	var packages []string
+	switch typed := value.(type) {
+	case []string:
+		packages = append(packages, typed...)
+	case []interface{}:
+		for _, item := range typed {
+			value, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			packages = append(packages, value)
+		}
+	default:
+		return nil, false
+	}
+	if len(packages) == 0 || len(packages) > 16 {
+		return nil, false
+	}
+	for _, item := range packages {
+		path := filepath.ToSlash(strings.TrimSpace(item))
+		if path == "." {
+			continue
+		}
+		if !strings.HasPrefix(path, "./") || strings.Contains(path, "\\") {
+			return nil, false
+		}
+		for _, part := range strings.Split(strings.TrimPrefix(path, "./"), "/") {
+			if part == "" || part == "." || part == ".." {
+				return nil, false
+			}
+		}
+	}
+	return packages, true
+}
+
+func commandTimeout(value interface{}) (time.Duration, bool) {
+	if value == nil {
+		return defaultCommandTimeout, true
+	}
+	milliseconds, ok := value.(float64)
+	if !ok || milliseconds != float64(int64(milliseconds)) || milliseconds <= 0 || milliseconds > float64(maxCommandTimeout.Milliseconds()) {
+		return 0, false
+	}
+	return time.Duration(milliseconds) * time.Millisecond, true
+}
+
+type limitedBuffer struct {
+	strings.Builder
+	limit    int
+	exceeded bool
+}
+
+func (buffer *limitedBuffer) Write(value []byte) (int, error) {
+	remaining := buffer.limit - buffer.Len()
+	if remaining <= 0 {
+		buffer.exceeded = true
+		return len(value), nil
+	}
+	if len(value) > remaining {
+		_, _ = buffer.Builder.Write(value[:remaining])
+		buffer.exceeded = true
+		return len(value), nil
+	}
+	return buffer.Builder.Write(value)
 }
 
 func verifyDiff(criterion contracts.AcceptanceCriterion, root string, check Check) Check {

@@ -59,6 +59,7 @@ The initial framework is implemented and tested as a P0/P1 vertical slice:
 - A deterministic Task state machine and DAG validator.
 - Workspace-bound, read-only `list_files`, `read_file` and `search_text` tools.
 - Atomic content-addressed Artifact storage and evidence links.
+- Deterministic `FILE_EXISTS`, `DIFF_CONTAINS`, evidence and bounded command acceptance checks. Command checks use a closed `go_test`/`go_vet` runner allowlist, never a shell.
 - A Mock Provider boundary and a CLI that drives the same Core an eventual Wails client will use.
 - An OpenAI-compatible `/v1` Provider adapter with normalized chat/tool calls, SSE streaming, cancellation and active capability probing. The CLI resolves configured OpenAI-compatible deployments at runtime without persisting API keys.
 - A bounded read-only Agent Worker with a fixed executor contract, one-tool-at-a-time loop, allowlist/risk/Schema checks, repeated-action blocking and token/duration budgets. The App Service and CLI persist an `AGENT_REPORT` Artifact/Evidence before the deterministic verifier decides completion.

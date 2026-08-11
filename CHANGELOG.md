@@ -71,6 +71,11 @@
 - CLI 新增 `deployment add|list|probe`、`task plan --deployment` 与 `task run-model --deployment`，将持久化 Deployment、模型规划和受控单步骤执行接入同一 JSON CLI。
 - API Key 只从运行时 `SIMPLENESS_API_KEY` 读取；持久化 Deployment 只可记录不透明凭据引用。CLI 同时兼容 `go run ... -- --data-dir ...` 调用形式。
 
+### 2026-08-11 Bounded command acceptance verifier
+
+- 新增 `COMMAND` 接受条件的确定性实现：仅允许 `go_test` 与 `go_vet` runner，以及明确声明的工作区相对 Go 包路径；不会执行 shell 或模型给出的任意命令行。
+- 每次验证固定在工作区工作目录运行，使用当前 Go runtime、默认 30 秒/最大 60 秒超时和 1 MiB 输出上限；未知 runner、路径逃逸、超时、超输出或非零退出均 fail-closed。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。
