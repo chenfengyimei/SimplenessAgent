@@ -27,4 +27,16 @@ func TestCreateAndSearchMemory(t *testing.T) {
 	if err != nil || len(results) != 1 || results[0].ID != created.ID {
 		t.Fatal(results, err)
 	}
+	task, _, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "context", Goal: "build memory context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := service.CompileMemoryContext(ctx, MemoryContextInput{Role: "EXECUTOR", TaskID: task.ID, StepID: "step", Query: "Network approval", BudgetLimit: 100, ReservedTokens: 20, Limit: 10})
+	if err != nil || len(compiled.Package.Sections) != 1 {
+		t.Fatal(compiled, err)
+	}
+	section := compiled.Package.Sections[0]
+	if section.Type != "MEMORY_CONSTRAINT" || section.SourceRefs[0] != "evt_user" && section.SourceRefs[0] != "memory:"+created.ID {
+		t.Fatal(section)
+	}
 }

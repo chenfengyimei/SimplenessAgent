@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/xm/simplenessagent/internal/artifact"
+	"github.com/xm/simplenessagent/internal/contextpack"
 	"github.com/xm/simplenessagent/internal/eventstore"
 	"github.com/xm/simplenessagent/internal/plan"
 	"github.com/xm/simplenessagent/internal/planner"
@@ -98,6 +99,32 @@ func (s *Service) SearchMemory(ctx context.Context, workspaceID, query string, l
 		return nil, err
 	}
 	return s.store.SearchMemory(ctx, workspaceID, query, limit)
+}
+
+type MemoryContextInput struct {
+	DeploymentID, Role, TaskID, StepID, Query string
+	BudgetLimit, ReservedTokens, Limit        int
+}
+
+// CompileMemoryContext retrieves scoped active memory and converts it to
+// attributable ContextPackage sections before the shared budget compiler runs.
+func (s *Service) CompileMemoryContext(ctx context.Context, input MemoryContextInput) (contextpack.Result, error) {
+	item, err := s.store.GetTask(ctx, input.TaskID)
+	if err != nil {
+		return contextpack.Result{}, err
+	}
+	results, err := s.SearchMemory(ctx, item.WorkspaceID, input.Query, input.Limit)
+	if err != nil {
+		return contextpack.Result{}, err
+	}
+	sections := make([]contracts.ContextSection, 0, len(results))
+	for _, memory := range results {
+		sources := append([]string{"memory:" + memory.ID}, memory.SourceEventIDs...)
+		sources = append(sources, memory.SourceArtifactIDs...)
+		priority := int(memory.Importance * memory.Confidence * 100)
+		sections = append(sections, contracts.ContextSection{Type: "MEMORY_" + memory.Type, Content: memory.Title + "\n" + memory.Content, SourceRefs: sources, Priority: priority})
+	}
+	return contextpack.Compile(contextpack.Input{DeploymentID: input.DeploymentID, Role: input.Role, TaskID: input.TaskID, StepID: input.StepID, BudgetLimit: input.BudgetLimit, ReservedTokens: input.ReservedTokens, Sections: sections})
 }
 
 func (s *Service) CreateDeployment(ctx context.Context, item contracts.Deployment) (contracts.Deployment, error) {

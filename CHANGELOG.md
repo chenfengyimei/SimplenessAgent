@@ -46,6 +46,11 @@
 - 新增版本化、来源绑定的 `MemoryRecord`、SQLite 迁移和 FTS5 索引；写入要求 Workspace 作用域及至少一个 Event/Artifact 来源。
 - 新增 App Service 的记忆创建和检索入口；检索按 Workspace、ACTIVE/PINNED 状态和有效期过滤，避免归档或其他项目记忆污染当前上下文。
 
+### 2026-08-11 Memory context retrieval
+
+- 新增显式 `CompileMemoryContext`：仅检索当前 Task 所属 Workspace 的可用记忆，再交给 Context Package 编译器统一执行 Token 预算和来源多样性裁剪。
+- 编译结果保留 `memory:<id>`、源 Event 和源 Artifact 引用，并以置信度与重要性确定段落优先级。
+
 ### 计划中
 
 - OpenAI-compatible Provider、流式调用与能力探测。
