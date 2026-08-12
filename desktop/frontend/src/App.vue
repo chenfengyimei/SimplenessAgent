@@ -188,4 +188,29 @@ nav { display: grid; gap: 3px; } nav button { color: #b3c1d5; background: transp
 .settings { max-width: 850px; margin: 25px auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }.card { border: 1px solid #2d3e54; background: #111b2a; border-radius: 12px; padding: 21px; }.settings-card:first-child { grid-row: span 2; }.section-title p { color: #66c6ff; font-size: 11px; font-weight: 800; letter-spacing: .08em; margin: 0 0 5px; }.section-title h2 { margin: 0; font-size: 19px; }.form { display: grid; gap: 13px; margin-top: 20px; }.form label { display: grid; gap: 6px; color: #bac8da; font-size: 12px; }.form label small { color: #7d91a9; }.hint, .muted { color: #92a2b5; font-size: 12px; line-height: 1.65; }.secondary-button { margin-top: 12px; border-radius: 8px; padding: 9px 13px; color: #c6e9ff; border: 1px solid #3c5875; background: #182a40; }.capabilities { display: grid; gap: 7px; margin-top: 16px; }.capabilities span { display: flex; justify-content: space-between; color: #aebdd0; font-size: 12px; }.capabilities b { color: #87e3c0; }.split { display: flex; justify-content: space-between; gap: 10px; }.text-button { color: #7ed5ff; border: 0; background: none; }.workspace-form { display: grid; gap: 8px; margin: 16px 0; }.workspace-list { display: grid; gap: 9px; margin-top: 16px; }.workspace-list > div { border-top: 1px solid #28384d; padding-top: 10px; }.workspace-list b, .workspace-list small { display: block; }.workspace-list b { font-size: 13px; }.workspace-list small { margin-top: 4px; color: #8090a7; font-size: 11px; overflow-wrap: anywhere; }
 .diagnostics-card { grid-column: span 2; }.diagnostic-list { display: grid; gap: 7px; max-height: 260px; overflow: auto; margin-top: 14px; }.diagnostic-list > div { display: grid; grid-template-columns: 104px minmax(0, 1fr) auto; align-items: center; gap: 10px; border-top: 1px solid #28384d; padding-top: 8px; color: #b5c5d8; font-size: 12px; }.diagnostic-list > div.error b { color: #ff9aab; }.diagnostic-list > div.info b { color: #87cef5; }.diagnostic-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.diagnostic-list small { color: #74879d; font-size: 10px; }
 @media (max-width: 1060px) { body { min-width: 760px; }.main { padding: 0 20px 22px; }.app-shell { grid-template-columns: 215px minmax(0, 1fr); }.header-selects { max-width: 430px; }.settings { grid-template-columns: 1fr; }.settings-card:first-child { grid-row: auto; } }
+
+/* Fixed-workbench layout: the surrounding page never scrolls. The sidebar's
+   project list and the conversation transcript are the only scrolling areas,
+   leaving navigation and the composer available at all times. */
+html, body, #app { height: 100%; overflow: hidden; }
+body { min-width: 760px; }
+.app-shell { height: 100vh; min-height: 0; overflow: hidden; }
+.sidebar { height: 100vh; min-height: 0; overflow: hidden; padding-top: 18px; }
+.brand { flex: 0 0 auto; padding-bottom: 18px; }
+.new-chat, nav { flex: 0 0 auto; }
+.projects { min-height: 0; overflow-y: auto; overflow-x: hidden; padding-bottom: 14px; }
+.core-status { flex: 0 0 auto; padding-bottom: 4px; }
+.main { height: 100vh; min-height: 0; padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.topbar { flex: 0 0 64px; min-height: 64px; padding: 0 26px; gap: 16px; }
+.topbar .eyebrow, .topbar .subtitle { display: none; }
+.topbar h1 { font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
+.header-selects select { padding: 8px 10px; font-size: 13px; }
+.banner { flex: 0 0 auto; margin: 8px 24px 0; }
+.conversation-shell { flex: 1 1 auto; width: min(100%, 1100px); height: auto; min-height: 0; margin: 8px auto 0; border-radius: 10px 10px 0 0; box-shadow: none; }
+.chat-body { min-height: 0; padding: 28px max(22px, 8%); }
+.welcome { margin-top: max(42px, 8vh); }
+.composer { flex: 0 0 auto; padding: 12px 18px 14px; }
+.composer textarea { min-height: 56px; max-height: 150px; resize: vertical; }
+.settings { flex: 1 1 auto; min-height: 0; overflow-y: auto; width: min(100% - 48px, 850px); margin: 18px auto; padding-bottom: 24px; }
+@media (max-width: 1060px) { .main { padding: 0; }.topbar { padding: 0 20px; }.banner { margin-left: 20px; margin-right: 20px; }.settings { width: min(100% - 40px, 850px); } }
 </style>
