@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -230,7 +231,14 @@ func (a *App) SendMessage(workspaceID, message, deploymentID string) (app.TaskSn
 		return app.TaskSnapshot{}, err
 	}
 	if _, err = service.GeneratePlan(a.ctx, created.ID, deploymentID); err != nil {
-		return app.TaskSnapshot{}, err
+		var domain *contracts.Error
+		if !errors.As(err, &domain) || domain.Code != contracts.ErrPlanInvalid {
+			return app.TaskSnapshot{}, err
+		}
+		// The task starts with a locally validated, bounded read-only plan. When
+		// a provider ignores the planning JSON contract we preserve that safe plan
+		// and continue instead of discarding the user's request.
+		return service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: created.ID, DeploymentID: deploymentID})
 	}
 	return service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: created.ID, DeploymentID: deploymentID})
 }

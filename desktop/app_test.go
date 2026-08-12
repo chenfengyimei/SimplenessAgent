@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/xm/simplenessagent/internal/app"
+	"github.com/xm/simplenessagent/internal/provider/mock"
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
 
@@ -33,6 +34,29 @@ func TestDesktopTaskUsesAgentReportAcceptance(t *testing.T) {
 	criteria := snapshot.Task.Spec.AcceptanceCriteria
 	if len(criteria) != 1 || criteria[0].Type != contracts.AcceptanceEvidenceExists || criteria[0].Spec["kind"] != "AGENT_REPORT" {
 		t.Fatalf("unexpected desktop task acceptance: %#v", criteria)
+	}
+}
+
+func TestSendMessageFallsBackToSafeInitialPlanWhenPlannerIsInvalid(t *testing.T) {
+	service, err := app.Open(context.Background(), app.Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) {
+		return mock.Provider{Response: "not a plan"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	desktop := &App{ctx: context.Background(), service: service, apiKeys: map[string]string{}, credentials: &memoryCredentialStore{values: map[string]string{}}}
+	workspace, err := desktop.CreateWorkspace("demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(context.Background(), contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "DESKTOP", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := desktop.SendMessage(workspace.ID, "inspect the workspace", deployment.ID)
+	if err != nil || snapshot.Task.Status != contracts.TaskCompleted {
+		t.Fatal(snapshot, err)
 	}
 }
 
