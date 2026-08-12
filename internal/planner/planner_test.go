@@ -41,6 +41,27 @@ func TestCreateRejectsInvalidPlanAndWriteTool(t *testing.T) {
 	})
 }
 
+func TestCreateAcceptsPlanWrappedInJSONCodeFence(t *testing.T) {
+	response := "```json\n{\"summary\":\"inspect\",\"steps\":[{\"version\":1,\"step_id\":\"inspect\",\"title\":\"Inspect\",\"goal\":\"Read files\",\"allowed_tools\":[\"list_files\"],\"workspace_scopes\":[\".\"],\"acceptance_criteria\":[{\"id\":\"evidence\",\"type\":\"EVIDENCE_EXISTS\",\"description\":\"report\",\"spec\":{}}],\"risk\":\"READ\",\"budget\":{\"max_attempts\":1,\"max_iterations\":2,\"max_duration_ms\":1000,\"max_input_tokens\":10,\"max_output_tokens\":10}}]}\n```"
+	planner, err := New(&fakeProvider{response: response})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := planner.Create(context.Background(), Input{DeploymentID: "dep", Task: testTask(), AvailableTools: []contracts.ToolDefinition{readTool()}})
+	if err != nil || len(created.Steps) != 1 {
+		t.Fatalf("fenced plan was not accepted: %#v, %v", created, err)
+	}
+}
+
+func TestCreateAcceptsPlanWithProviderPreamble(t *testing.T) {
+	response := "Here is the requested plan:\n{\"summary\":\"inspect\",\"steps\":[{\"version\":1,\"step_id\":\"inspect\",\"title\":\"Inspect\",\"goal\":\"Read files\",\"allowed_tools\":[\"list_files\"],\"workspace_scopes\":[\".\"],\"acceptance_criteria\":[{\"id\":\"evidence\",\"type\":\"EVIDENCE_EXISTS\",\"description\":\"report\",\"spec\":{}}],\"risk\":\"READ\",\"budget\":{\"max_attempts\":1,\"max_iterations\":2,\"max_duration_ms\":1000,\"max_input_tokens\":10,\"max_output_tokens\":10}}]}\nThis plan is read-only."
+	planner, _ := New(&fakeProvider{response: response})
+	created, err := planner.Create(context.Background(), Input{DeploymentID: "dep", Task: testTask(), AvailableTools: []contracts.ToolDefinition{readTool()}})
+	if err != nil || len(created.Steps) != 1 {
+		t.Fatalf("plan with preamble was not accepted: %#v, %v", created, err)
+	}
+}
+
 func TestCreateLocalReplanUsesNewStepIDs(t *testing.T) {
 	previous := contracts.PlanVersion{PlanID: "pln_previous", Steps: []contracts.StepSpec{{StepID: "inspect"}}}
 	response := `{"summary":"replan","steps":[{"version":1,"step_id":"inspect","title":"Inspect","goal":"Read files","allowed_tools":["list_files"],"workspace_scopes":["."],"acceptance_criteria":[{"id":"evidence","type":"EVIDENCE_EXISTS","description":"report","spec":{}}],"risk":"READ","budget":{"max_attempts":1,"max_iterations":2,"max_duration_ms":1000,"max_input_tokens":10,"max_output_tokens":10}}]}`

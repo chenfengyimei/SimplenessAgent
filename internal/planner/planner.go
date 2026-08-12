@@ -135,7 +135,7 @@ func validateReplan(candidate contracts.PlanVersion, context *ReplanContext) err
 }
 
 func decodePlan(text string) (contracts.PlanVersion, error) {
-	decoder := json.NewDecoder(bytes.NewBufferString(strings.TrimSpace(text)))
+	decoder := json.NewDecoder(bytes.NewBufferString(planJSON(text)))
 	decoder.DisallowUnknownFields()
 	var candidate contracts.PlanVersion
 	if err := decoder.Decode(&candidate); err != nil {
@@ -145,6 +145,69 @@ func decodePlan(text string) (contracts.PlanVersion, error) {
 		return contracts.PlanVersion{}, contracts.NewError(contracts.ErrPlanInvalid, "planner response contains trailing JSON values")
 	}
 	return candidate, nil
+}
+
+// planJSON accepts the common Markdown code fence added by otherwise
+// OpenAI-compatible models. It deliberately unwraps only one complete fenced
+// block; all JSON decoding and local plan validation remain strict.
+func planJSON(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "```") {
+		return extractPlanJSONObject(trimmed)
+	}
+	firstLineEnd := strings.IndexByte(trimmed, '\n')
+	if firstLineEnd < 0 {
+		return extractPlanJSONObject(trimmed)
+	}
+	opening := strings.TrimSpace(trimmed[:firstLineEnd])
+	if opening != "```" && !strings.EqualFold(opening, "```json") {
+		return trimmed
+	}
+	body := trimmed[firstLineEnd+1:]
+	closing := strings.LastIndex(body, "```")
+	if closing < 0 || strings.TrimSpace(body[closing+3:]) != "" {
+		return extractPlanJSONObject(trimmed)
+	}
+	return strings.TrimSpace(body[:closing])
+}
+
+// extractPlanJSONObject is a narrow compatibility layer for providers which
+// add a sentence before or after their JSON despite the response contract. It
+// extracts exactly the first balanced object; the object is still decoded with
+// DisallowUnknownFields and fully validated before it can be persisted.
+func extractPlanJSONObject(text string) string {
+	start := strings.IndexByte(text, '{')
+	if start < 0 {
+		return text
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for index := start; index < len(text); index++ {
+		character := text[index]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if character == '\\' {
+				escaped = true
+			} else if character == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch character {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return text[start : index+1]
+			}
+		}
+	}
+	return text
 }
 
 func validateStepPolicy(candidate contracts.PlanVersion, taskBudget contracts.TaskBudget, available []contracts.ToolDefinition) error {
