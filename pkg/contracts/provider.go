@@ -18,6 +18,7 @@ type ChatRequest struct {
 	DeploymentID string           `json:"deployment_id"`
 	Messages     []Message        `json:"messages"`
 	Tools        []ToolDefinition `json:"tools,omitempty"`
+	JSONMode     bool             `json:"json_mode,omitempty"`
 }
 
 type Message struct {

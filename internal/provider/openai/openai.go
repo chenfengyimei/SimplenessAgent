@@ -77,9 +77,13 @@ func (p *Provider) Chat(ctx context.Context, request contracts.ChatRequest) (con
 	if err := p.requireSuccess(response); err != nil {
 		return contracts.ChatResponse{}, err
 	}
+	encoded, err := io.ReadAll(io.LimitReader(response.Body, 8*1024*1024))
+	if err != nil {
+		return contracts.ChatResponse{}, contracts.NewError(contracts.ErrInvalidResponse, "provider response could not be read")
+	}
 	var payload chatCompletion
-	if err := json.NewDecoder(io.LimitReader(response.Body, 8*1024*1024)).Decode(&payload); err != nil {
-		return contracts.ChatResponse{}, contracts.NewError(contracts.ErrInvalidResponse, "provider returned malformed chat completion JSON")
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		return contracts.ChatResponse{}, contracts.NewError(contracts.ErrInvalidResponse, malformedCompletionMessage(encoded))
 	}
 	result, err := normalizeCompletion(payload)
 	if err != nil {
@@ -266,7 +270,11 @@ func (p *Provider) requestBody(request contracts.ChatRequest, stream bool) ([]by
 		}
 		tools = append(tools, wireTool{Type: "function", Function: wireFunction{Name: tool.Name, Description: tool.Description, Parameters: schema}})
 	}
-	return json.Marshal(wireRequest{Model: p.model, Messages: messages, Tools: tools, Stream: stream})
+	requestBody := wireRequest{Model: p.model, Messages: messages, Tools: tools, Stream: stream}
+	if request.JSONMode {
+		requestBody.ResponseFormat = &wireResponseFormat{Type: "json_object"}
+	}
+	return json.Marshal(requestBody)
 }
 
 func (p *Provider) do(ctx context.Context, method, endpoint string, body []byte) (*http.Response, error) {
@@ -361,10 +369,14 @@ func redact(value, secret string) string {
 }
 
 type wireRequest struct {
-	Model    string        `json:"model"`
-	Messages []wireMessage `json:"messages"`
-	Tools    []wireTool    `json:"tools,omitempty"`
-	Stream   bool          `json:"stream"`
+	Model          string              `json:"model"`
+	Messages       []wireMessage       `json:"messages"`
+	Tools          []wireTool          `json:"tools,omitempty"`
+	Stream         bool                `json:"stream"`
+	ResponseFormat *wireResponseFormat `json:"response_format,omitempty"`
+}
+type wireResponseFormat struct {
+	Type string `json:"type"`
 }
 type wireMessage struct {
 	Role       string         `json:"role"`
@@ -456,6 +468,18 @@ func contentString(content json.RawMessage) (string, error) {
 		return text, nil
 	}
 	return "", contracts.NewError(contracts.ErrInvalidResponse, "provider response content must be text")
+}
+
+func malformedCompletionMessage(body []byte) string {
+	preview := strings.TrimSpace(string(body))
+	preview = strings.Join(strings.Fields(preview), " ")
+	if len([]rune(preview)) > 180 {
+		preview = string([]rune(preview)[:180]) + "…"
+	}
+	if preview == "" {
+		return "provider returned an empty response body"
+	}
+	return "provider returned malformed chat completion JSON: " + preview
 }
 func normalizeUsage(value usage) contracts.TokenUsage {
 	return contracts.TokenUsage{InputTokens: value.PromptTokens, OutputTokens: value.CompletionTokens}

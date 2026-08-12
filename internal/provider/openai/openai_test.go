@@ -51,6 +51,27 @@ func TestChatNormalizesTextToolsUsageAndRequest(t *testing.T) {
 	}
 }
 
+func TestChatRequestsJSONModeAndIncludesSafeMalformedPreview(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body wireRequest
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.ResponseFormat == nil || body.ResponseFormat.Type != "json_object" {
+			t.Fatalf("JSON mode was not forwarded: %#v", body)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte("<html>gateway page</html>"))
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, server.URL)
+	_, err := provider.Chat(context.Background(), contracts.ChatRequest{Messages: []contracts.Message{{Role: "user", Content: "json"}}, JSONMode: true})
+	var domain *contracts.Error
+	if !errors.As(err, &domain) || domain.Code != contracts.ErrInvalidResponse || !strings.Contains(domain.Message, "gateway page") {
+		t.Fatalf("expected actionable malformed response error, got %#v", err)
+	}
+}
+
 func TestChatStreamEmitsOrderedDeltasAndCompletedAggregate(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")

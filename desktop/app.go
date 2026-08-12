@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -226,21 +225,14 @@ func (a *App) SendMessage(workspaceID, message, deploymentID string) (app.TaskSn
 	if message == "" {
 		return app.TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidInput, "message is required")
 	}
-	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "agent_report", Type: contracts.AcceptanceEvidenceExists, Description: "bounded agent report persisted", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}})
+	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "recon_report", Type: contracts.AcceptanceEvidenceExists, Description: "deterministic workspace reconnaissance persisted", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}})
 	if err != nil {
 		return app.TaskSnapshot{}, err
 	}
-	if _, err = service.GeneratePlan(a.ctx, created.ID, deploymentID); err != nil {
-		var domain *contracts.Error
-		if !errors.As(err, &domain) || domain.Code != contracts.ErrPlanInvalid {
-			return app.TaskSnapshot{}, err
-		}
-		// The task starts with a locally validated, bounded read-only plan. When
-		// a provider ignores the planning JSON contract we preserve that safe plan
-		// and continue instead of discarding the user's request.
-		return service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: created.ID, DeploymentID: deploymentID})
-	}
-	return service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: created.ID, DeploymentID: deploymentID})
+	// Start each chat turn with the small, deterministic reconnaissance plan
+	// created by Core. This avoids requiring small local/API models to emit a
+	// complex plan schema or tool call before the user sees useful results.
+	return service.RunTask(a.ctx, created.ID)
 }
 
 func compactTitle(message string) string {

@@ -37,7 +37,7 @@ func TestDesktopTaskUsesAgentReportAcceptance(t *testing.T) {
 	}
 }
 
-func TestSendMessageFallsBackToSafeInitialPlanWhenPlannerIsInvalid(t *testing.T) {
+func TestSendMessageRunsSafeInitialPlanWithoutRequiringPlannerOutput(t *testing.T) {
 	service, err := app.Open(context.Background(), app.Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) {
 		return mock.Provider{Response: "not a plan"}, nil
 	}})

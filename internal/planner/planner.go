@@ -58,7 +58,7 @@ func (p *Planner) Create(ctx context.Context, input Input) (contracts.PlanVersio
 	if err != nil {
 		return contracts.PlanVersion{}, err
 	}
-	response, err := p.provider.Chat(ctx, contracts.ChatRequest{DeploymentID: input.DeploymentID, Messages: []contracts.Message{{Role: "system", Content: systemContract}, {Role: "user", Content: string(requestBody)}}})
+	response, err := p.provider.Chat(ctx, contracts.ChatRequest{DeploymentID: input.DeploymentID, JSONMode: true, Messages: []contracts.Message{{Role: "system", Content: systemContract}, {Role: "user", Content: string(requestBody)}}})
 	if err != nil {
 		return contracts.PlanVersion{}, err
 	}
