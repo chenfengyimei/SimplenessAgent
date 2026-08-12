@@ -383,7 +383,7 @@ func (s *Service) GeneratePlan(ctx context.Context, taskID, deploymentID string)
 	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
 		return contracts.PlanVersion{}, err
 	}
-	if err = tool.RegisterWriteProposalTools(registry, workspaceItem.RootPath, func(tool.WriteProposal) error { return nil }); err != nil {
+	if err = tool.RegisterWriteProposalTools(registry, workspaceItem.RootPath, func(tool.ProposalRequest) error { return nil }); err != nil {
 		return contracts.PlanVersion{}, err
 	}
 	previous, err := s.store.GetLatestPlan(ctx, item.ID)
@@ -455,7 +455,7 @@ func (s *Service) ReplanTask(ctx context.Context, taskID, deploymentID, reason s
 	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
 		return contracts.PlanVersion{}, err
 	}
-	if err = tool.RegisterWriteProposalTools(registry, workspaceItem.RootPath, func(tool.WriteProposal) error { return nil }); err != nil {
+	if err = tool.RegisterWriteProposalTools(registry, workspaceItem.RootPath, func(tool.ProposalRequest) error { return nil }); err != nil {
 		return contracts.PlanVersion{}, err
 	}
 	plannerService, err := planner.New(provider)
@@ -495,15 +495,23 @@ type WriteFileInput struct {
 	TaskID, StepID, Path, Content, ExpectedContentHash string
 }
 
-// PendingWrite is a model-proposed file change. It is returned to the desktop
-// for user review and is never written until the user explicitly approves its
-// parameter-bound WriteFile request.
+// PendingWrite is one model-proposed file change. It is returned to the
+// desktop for user review and is never written until the user explicitly
+// approves its parameter-bound WriteFile request.
 type PendingWrite struct {
 	TaskID              string `json:"task_id"`
 	StepID              string `json:"step_id"`
 	Path                string `json:"path"`
 	Content             string `json:"content"`
 	ExpectedContentHash string `json:"expected_content_hash"`
+}
+
+// PendingWriteBatch is the reviewable, bounded set of changes produced by one
+// model tool call. The entire batch is approved or rejected together.
+type PendingWriteBatch struct {
+	TaskID string         `json:"task_id"`
+	StepID string         `json:"step_id"`
+	Writes []PendingWrite `json:"writes"`
 }
 
 // ApproveWriteFile creates a single-use approval ticket for exactly one file
@@ -577,12 +585,12 @@ func (s *Service) WriteFile(ctx context.Context, input WriteFileInput) (contract
 	return result, nil
 }
 
-func (s *Service) persistPendingWrite(ctx context.Context, item contracts.Task, stepID string, pending PendingWrite) error {
+func (s *Service) persistPendingWrite(ctx context.Context, item contracts.Task, stepID string, pending PendingWriteBatch) error {
 	encoded, err := json.Marshal(pending)
 	if err != nil {
 		return err
 	}
-	artifactItem, err := s.artifactStore.Put("PENDING_WRITE", "application/json", "model-proposed workspace change awaiting approval", item.ID, stepID, encoded)
+	artifactItem, err := s.artifactStore.Put("PENDING_WRITE", "application/json", "model-proposed workspace change batch awaiting approval", item.ID, stepID, encoded)
 	if err != nil {
 		return err
 	}
@@ -624,13 +632,30 @@ func (s *Service) ApprovePendingWrite(ctx context.Context, taskID, stepID string
 	if !waiting {
 		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "step is not waiting for approval")
 	}
-	pending, err := s.readPendingWrite(ctx, taskID, stepID)
+	pending, err := s.readPendingWriteBatch(ctx, taskID, stepID)
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
-	input := WriteFileInput{TaskID: taskID, StepID: stepID, Path: pending.Path, Content: pending.Content, ExpectedContentHash: pending.ExpectedContentHash}
-	if _, err = s.ApproveWriteFile(ctx, input, expiresAt); err != nil {
+	workspaceItem, err := s.store.GetWorkspace(ctx, item.WorkspaceID)
+	if err != nil {
 		return TaskSnapshot{}, err
+	}
+	proposal := tool.ProposalRequest{Writes: make([]tool.WriteProposal, 0, len(pending.Writes))}
+	inputs := make([]WriteFileInput, 0, len(pending.Writes))
+	for _, write := range pending.Writes {
+		if write.TaskID != taskID || write.StepID != stepID {
+			return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidInput, "pending write batch is malformed")
+		}
+		proposal.Writes = append(proposal.Writes, tool.WriteProposal{Path: write.Path, Content: write.Content, ExpectedContentHash: write.ExpectedContentHash})
+		inputs = append(inputs, WriteFileInput{TaskID: taskID, StepID: stepID, Path: write.Path, Content: write.Content, ExpectedContentHash: write.ExpectedContentHash})
+	}
+	if err = tool.ValidateProposalRequest(workspaceItem.RootPath, proposal); err != nil {
+		return TaskSnapshot{}, err
+	}
+	for _, input := range inputs {
+		if _, err = s.ApproveWriteFile(ctx, input, expiresAt); err != nil {
+			return TaskSnapshot{}, err
+		}
 	}
 	if err = s.transitionTask(ctx, item.ID, contracts.TaskWaitingApproval, contracts.TaskRunning, "TASK_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
@@ -638,17 +663,19 @@ func (s *Service) ApprovePendingWrite(ctx context.Context, taskID, stepID string
 	if err = s.transitionStep(ctx, item.ID, stepID, contracts.StepWaitingApproval, contracts.StepRunning, "STEP_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
 	}
-	result, err := s.WriteFile(ctx, input)
-	if err != nil {
-		_ = s.transitionStep(ctx, item.ID, stepID, contracts.StepRunning, contracts.StepFailed, "STEP_STATUS_CHANGED")
-		_ = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskFailed, "TASK_STATUS_CHANGED")
-		return TaskSnapshot{}, err
-	}
-	if result.Status != "SUCCEEDED" {
-		runErr := contracts.NewError(contracts.ErrSideEffectUnknown, result.Summary)
-		_ = s.transitionStep(ctx, item.ID, stepID, contracts.StepRunning, contracts.StepFailed, "STEP_STATUS_CHANGED")
-		_ = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskFailed, "TASK_STATUS_CHANGED")
-		return TaskSnapshot{}, runErr
+	for _, input := range inputs {
+		result, writeErr := s.WriteFile(ctx, input)
+		if writeErr != nil {
+			_ = s.transitionStep(ctx, item.ID, stepID, contracts.StepRunning, contracts.StepFailed, "STEP_STATUS_CHANGED")
+			_ = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskFailed, "TASK_STATUS_CHANGED")
+			return TaskSnapshot{}, writeErr
+		}
+		if result.Status != "SUCCEEDED" {
+			runErr := contracts.NewError(contracts.ErrSideEffectUnknown, result.Summary)
+			_ = s.transitionStep(ctx, item.ID, stepID, contracts.StepRunning, contracts.StepFailed, "STEP_STATUS_CHANGED")
+			_ = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskFailed, "TASK_STATUS_CHANGED")
+			return TaskSnapshot{}, runErr
+		}
 	}
 	if err = s.transitionStep(ctx, item.ID, stepID, contracts.StepRunning, contracts.StepVerifying, "STEP_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
@@ -677,10 +704,10 @@ func (s *Service) ApprovePendingWrite(ctx context.Context, taskID, stepID string
 	return s.CheckpointTask(ctx, item.ID)
 }
 
-func (s *Service) readPendingWrite(ctx context.Context, taskID, stepID string) (PendingWrite, error) {
+func (s *Service) readPendingWriteBatch(ctx context.Context, taskID, stepID string) (PendingWriteBatch, error) {
 	items, err := s.ListTaskArtifacts(ctx, taskID)
 	if err != nil {
-		return PendingWrite{}, err
+		return PendingWriteBatch{}, err
 	}
 	for index := len(items) - 1; index >= 0; index-- {
 		item := items[index]
@@ -689,45 +716,60 @@ func (s *Service) readPendingWrite(ctx context.Context, taskID, stepID string) (
 		}
 		contents, readErr := s.artifactStore.Read(item)
 		if readErr != nil {
-			return PendingWrite{}, readErr
+			return PendingWriteBatch{}, readErr
 		}
-		var pending PendingWrite
+		var pending PendingWriteBatch
 		if unmarshalErr := json.Unmarshal(contents, &pending); unmarshalErr != nil {
-			return PendingWrite{}, unmarshalErr
+			return PendingWriteBatch{}, unmarshalErr
 		}
-		if pending.TaskID != taskID || pending.StepID != stepID || strings.TrimSpace(pending.Path) == "" || strings.TrimSpace(pending.ExpectedContentHash) == "" {
-			return PendingWrite{}, contracts.NewError(contracts.ErrInvalidInput, "pending write artifact is malformed")
+		if len(pending.Writes) == 0 {
+			// Compatibility for a single-file proposal persisted before batched
+			// proposal support. JSON ignores unknown fields, so an empty Writes
+			// slice is the marker for the old artifact representation.
+			var legacy PendingWrite
+			if legacyErr := json.Unmarshal(contents, &legacy); legacyErr != nil {
+				return PendingWriteBatch{}, legacyErr
+			}
+			pending = PendingWriteBatch{TaskID: legacy.TaskID, StepID: legacy.StepID, Writes: []PendingWrite{legacy}}
+		}
+		if pending.TaskID != taskID || pending.StepID != stepID || len(pending.Writes) == 0 || len(pending.Writes) > 16 {
+			return PendingWriteBatch{}, contracts.NewError(contracts.ErrInvalidInput, "pending write artifact is malformed")
+		}
+		for _, write := range pending.Writes {
+			if write.TaskID != taskID || write.StepID != stepID || strings.TrimSpace(write.Path) == "" || strings.TrimSpace(write.ExpectedContentHash) == "" {
+				return PendingWriteBatch{}, contracts.NewError(contracts.ErrInvalidInput, "pending write artifact is malformed")
+			}
 		}
 		return pending, nil
 	}
-	return PendingWrite{}, contracts.NewError(contracts.ErrNotFound, "pending write proposal is unavailable")
+	return PendingWriteBatch{}, contracts.NewError(contracts.ErrNotFound, "pending write proposal is unavailable")
 }
 
 // PendingWrite returns the current write proposal for a task waiting for user
 // approval. Desktop callers receive only this reviewable, parameter-bound
 // proposal, never a path outside the task's workspace.
-func (s *Service) PendingWrite(ctx context.Context, taskID string) (PendingWrite, error) {
+func (s *Service) PendingWrite(ctx context.Context, taskID string) (PendingWriteBatch, error) {
 	item, err := s.store.GetTask(ctx, taskID)
 	if err != nil {
-		return PendingWrite{}, err
+		return PendingWriteBatch{}, err
 	}
 	if item.Status != contracts.TaskWaitingApproval {
-		return PendingWrite{}, contracts.NewError(contracts.ErrInvalidTransition, "task is not waiting for a workspace-change approval")
+		return PendingWriteBatch{}, contracts.NewError(contracts.ErrInvalidTransition, "task is not waiting for a workspace-change approval")
 	}
 	planVersion, err := s.store.GetLatestPlan(ctx, taskID)
 	if err != nil {
-		return PendingWrite{}, err
+		return PendingWriteBatch{}, err
 	}
 	states, err := s.store.GetSteps(ctx, planVersion.PlanID)
 	if err != nil {
-		return PendingWrite{}, err
+		return PendingWriteBatch{}, err
 	}
 	for _, state := range states {
 		if state.Status == contracts.StepWaitingApproval {
-			return s.readPendingWrite(ctx, taskID, state.StepID)
+			return s.readPendingWriteBatch(ctx, taskID, state.StepID)
 		}
 	}
-	return PendingWrite{}, contracts.NewError(contracts.ErrNotFound, "pending write proposal is unavailable")
+	return PendingWriteBatch{}, contracts.NewError(contracts.ErrNotFound, "pending write proposal is unavailable")
 }
 
 func writeIntent(taskID string, input WriteFileInput) (policy.Intent, error) {
@@ -768,7 +810,7 @@ func (s *Service) writeContext(ctx context.Context, taskID, stepID string, requi
 	if !found {
 		return contracts.Task{}, contracts.StepSpec{}, contracts.Workspace{}, contracts.NewError(contracts.ErrNotFound, "step is not in the active plan")
 	}
-	if step.Risk != contracts.RiskWrite || (!contains(step.AllowedTools, "write_file") && !contains(step.AllowedTools, "propose_write_file") && !contains(step.AllowedTools, "propose_text_replace")) {
+	if step.Risk != contracts.RiskWrite || (!contains(step.AllowedTools, "write_file") && !contains(step.AllowedTools, "propose_write_file") && !contains(step.AllowedTools, "propose_text_replace") && !contains(step.AllowedTools, "propose_file_batch")) {
 		return contracts.Task{}, contracts.StepSpec{}, contracts.Workspace{}, contracts.NewError(contracts.ErrToolNotAllowed, "write operation is not authorized for this step")
 	}
 	if requireRunning {
@@ -875,7 +917,7 @@ func minimalPlan(item contracts.Task, allowWriteProposals bool) contracts.PlanVe
 		if !allowWriteProposals {
 			return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: "在受控只读工具边界内理解用户请求、收集证据并给出可复核回复", CreatedByAgent: "core-conversation-bootstrap", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: "理解请求并执行只读操作", Goal: item.Goal, AllowedTools: []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet"}, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_agent", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的模型 Agent 报告", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: contracts.RiskRead, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 4, MaxDurationMS: int64((5 * time.Minute).Milliseconds()), MaxInputTokens: 8000, MaxOutputTokens: 2000}, ExecutionMode: "AGENT", PreferredRole: "RECON"}}}
 		}
-		return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: "在受控工作区内理解请求，使用读取、验证和审批后写入能力完成本轮任务。", CreatedByAgent: "core-conversation-bootstrap", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: "理解请求并执行受控工作区操作", Goal: item.Goal, AllowedTools: []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet", "propose_write_file", "propose_text_replace"}, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_agent", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的模型 Agent 报告", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: contracts.RiskWrite, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 6, MaxDurationMS: int64((5 * time.Minute).Milliseconds()), MaxInputTokens: 8000, MaxOutputTokens: 2000}, ExecutionMode: "AGENT", PreferredRole: "EXECUTOR"}}}
+		return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: "在受控工作区内理解请求，使用读取、验证和审批后写入能力完成本轮任务。", CreatedByAgent: "core-conversation-bootstrap", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: "理解请求并执行受控工作区操作", Goal: item.Goal, AllowedTools: []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet", "propose_write_file", "propose_text_replace", "propose_file_batch"}, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_agent", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的模型 Agent 报告", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: contracts.RiskWrite, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 6, MaxDurationMS: int64((5 * time.Minute).Milliseconds()), MaxInputTokens: 8000, MaxOutputTokens: 2000}, ExecutionMode: "AGENT", PreferredRole: "EXECUTOR"}}}
 	}
 	return deterministicReconPlan(item)
 }
@@ -1247,13 +1289,20 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
 		return TaskSnapshot{}, err
 	}
-	var pending *PendingWrite
+	var pending *PendingWriteBatch
 	if step.Risk == contracts.RiskWrite {
-		if err = tool.RegisterWriteProposalTools(registry, workspaceItem.RootPath, func(proposal tool.WriteProposal) error {
-			if err := validateWriteScope(workspaceItem.RootPath, step.WorkspaceScopes, proposal.Path); err != nil {
-				return err
+		if err = tool.RegisterWriteProposalTools(registry, workspaceItem.RootPath, func(proposal tool.ProposalRequest) error {
+			if len(proposal.Writes) == 0 || len(proposal.Writes) > 16 {
+				return contracts.NewError(contracts.ErrInvalidInput, "write proposal must contain one to sixteen files")
 			}
-			pending = &PendingWrite{TaskID: item.ID, StepID: step.StepID, Path: proposal.Path, Content: proposal.Content, ExpectedContentHash: proposal.ExpectedContentHash}
+			writes := make([]PendingWrite, 0, len(proposal.Writes))
+			for _, write := range proposal.Writes {
+				if scopeErr := validateWriteScope(workspaceItem.RootPath, step.WorkspaceScopes, write.Path); scopeErr != nil {
+					return scopeErr
+				}
+				writes = append(writes, PendingWrite{TaskID: item.ID, StepID: step.StepID, Path: write.Path, Content: write.Content, ExpectedContentHash: write.ExpectedContentHash})
+			}
+			pending = &PendingWriteBatch{TaskID: item.ID, StepID: step.StepID, Writes: writes}
 			return nil
 		}); err != nil {
 			return TaskSnapshot{}, err

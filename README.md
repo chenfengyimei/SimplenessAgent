@@ -71,10 +71,10 @@ The initial framework is implemented and tested as a P0/P1 vertical slice:
 - Deterministic `FILE_EXISTS`, `DIFF_CONTAINS`, evidence and bounded command acceptance checks. Command checks use a closed `go_test`/`go_vet` runner allowlist, never a shell.
 - A Mock Provider boundary and a CLI that drives the same Core an eventual Wails client will use.
 - An OpenAI-compatible `/v1` Provider adapter with normalized chat/tool calls, SSE streaming, cancellation and active capability probing. The CLI resolves configured OpenAI-compatible deployments at runtime without persisting API keys.
-- A bounded read-only Agent Worker with a fixed executor contract, one-tool-at-a-time loop, allowlist/risk/Schema checks, repeated-action blocking and token/duration budgets. The App Service and CLI persist an `AGENT_REPORT` Artifact/Evidence before the deterministic verifier decides completion.
+- A bounded Agent Worker with a fixed executor contract, allowlist/risk/Schema checks, repeated-action blocking and token/duration budgets. It can inspect a workspace, examine Git state, run fixed `go test`/`go vet` checks, and submit exact single-file or up-to-16-file workspace-change proposals. Proposals never write directly: the App Service persists an `AGENT_REPORT`, a reviewable change batch, and only performs atomic writes after a parameter-bound user approval.
 - Integration, recovery, state-machine, plan and path-boundary tests.
 
-The deterministic reconnaissance runner remains available as a safe baseline. Model-driven planning and bounded read-only execution are now available through an explicit Deployment; mutating execution remains behind approval, write-ahead intent and recovery boundaries.
+The deterministic reconnaissance runner remains available as a safe baseline. Model-driven planning and bounded execution are available through an explicit Deployment; every mutation remains behind approval, write-ahead intent and recovery boundaries.
 
 ## Desktop workbench
 

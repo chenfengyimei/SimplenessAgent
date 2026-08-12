@@ -20,6 +20,40 @@ export namespace app {
 	        this.expected_content_hash = source["expected_content_hash"];
 	    }
 	}
+	export class PendingWriteBatch {
+	    task_id: string;
+	    step_id: string;
+	    writes: PendingWrite[];
+
+	    static createFrom(source: any = {}) {
+	        return new PendingWriteBatch(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.task_id = source["task_id"];
+	        this.step_id = source["step_id"];
+	        this.writes = this.convertValues(source["writes"], PendingWrite);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class TaskSnapshot {
 	    task: contracts.Task;
 	    plan: contracts.PlanVersion;
@@ -591,7 +625,6 @@ export namespace contracts {
 		}
 	}
 
-
 	export class Workspace {
 	    id: string;
 	    version: number;
@@ -688,7 +721,7 @@ export namespace main {
 	    tool_name: string;
 	    files: string[];
 	    truncated: boolean;
-	    pending_write?: app.PendingWrite;
+	    pending_write?: app.PendingWriteBatch;
 
 	    static createFrom(source: any = {}) {
 	        return new TurnReportView(source);
@@ -700,7 +733,7 @@ export namespace main {
 	        this.tool_name = source["tool_name"];
 	        this.files = source["files"];
 	        this.truncated = source["truncated"];
-	        this.pending_write = this.convertValues(source["pending_write"], app.PendingWrite);
+	        this.pending_write = this.convertValues(source["pending_write"], app.PendingWriteBatch);
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

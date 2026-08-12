@@ -142,8 +142,126 @@ func TestModelWriteProposalRejectsChangedFileWithoutOverwriting(t *testing.T) {
 	}
 }
 
+func TestModelBatchWriteProposalWritesAllFilesAfterOneApproval(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	firstPath := filepath.Join(root, "one.txt")
+	secondPath := filepath.Join(root, "two.txt")
+	if err := os.WriteFile(firstPath, []byte("one-before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondPath, []byte("two-before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider := &proposalProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "proposal", Name: "propose_file_batch", ArgumentsJSON: `{"writes":[{"path":"one.txt","content":"one-after","expected_content_hash":"` + hashText("one-before") + `"},{"path":"two.txt","content":"two-after","expected_content_hash":"` + hashText("two-before") + `"}]}`}}}}}
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) { return provider, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "DESKTOP", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "batch", Goal: "replace two files", AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "one", Type: contracts.AcceptanceFileExists, Description: "first exists", Spec: map[string]interface{}{"path": "one.txt"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planVersion := writeProposalPlanWithTools(created, "batch-step", []string{"propose_file_batch"})
+	event, err := service.newEvent(ctx, created.ID, "PLAN_CREATED", map[string]interface{}{"plan_id": planVersion.PlanID, "revision": planVersion.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.store.CreatePlan(ctx, planVersion, event); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.RunModelStep(ctx, RunModelStepInput{TaskID: created.ID, DeploymentID: deployment.ID})
+	if err != nil || snapshot.Task.Status != contracts.TaskWaitingApproval {
+		t.Fatal(snapshot, err)
+	}
+	pending, err := service.PendingWrite(ctx, created.ID)
+	if err != nil || len(pending.Writes) != 2 || pending.Writes[0].Path != "one.txt" || pending.Writes[1].Path != "two.txt" {
+		t.Fatal(pending, err)
+	}
+	if content, readErr := os.ReadFile(firstPath); readErr != nil || string(content) != "one-before" {
+		t.Fatal(string(content), readErr)
+	}
+	completed, err := service.ApprovePendingWrite(ctx, created.ID, "batch-step", time.Now().Add(time.Minute))
+	if err != nil || completed.Task.Status != contracts.TaskCompleted {
+		t.Fatal(completed, err)
+	}
+	if content, readErr := os.ReadFile(firstPath); readErr != nil || string(content) != "one-after" {
+		t.Fatal(string(content), readErr)
+	}
+	if content, readErr := os.ReadFile(secondPath); readErr != nil || string(content) != "two-after" {
+		t.Fatal(string(content), readErr)
+	}
+}
+
+func TestModelBatchWriteProposalRejectsAnyChangedFileBeforeWriting(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	firstPath := filepath.Join(root, "one.txt")
+	secondPath := filepath.Join(root, "two.txt")
+	if err := os.WriteFile(firstPath, []byte("one-before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondPath, []byte("two-before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider := &proposalProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "proposal", Name: "propose_file_batch", ArgumentsJSON: `{"writes":[{"path":"one.txt","content":"one-after","expected_content_hash":"` + hashText("one-before") + `"},{"path":"two.txt","content":"two-after","expected_content_hash":"` + hashText("two-before") + `"}]}`}}}}}
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) { return provider, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "DESKTOP", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "batch", Goal: "replace two files", AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "one", Type: contracts.AcceptanceFileExists, Description: "first exists", Spec: map[string]interface{}{"path": "one.txt"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planVersion := writeProposalPlanWithTools(created, "batch-step", []string{"propose_file_batch"})
+	event, err := service.newEvent(ctx, created.ID, "PLAN_CREATED", map[string]interface{}{"plan_id": planVersion.PlanID, "revision": planVersion.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.store.CreatePlan(ctx, planVersion, event); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.RunModelStep(ctx, RunModelStepInput{TaskID: created.ID, DeploymentID: deployment.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(secondPath, []byte("changed elsewhere"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ApprovePendingWrite(ctx, created.ID, "batch-step", time.Now().Add(time.Minute)); err == nil {
+		t.Fatal("the whole batch must be rejected when any target changes")
+	}
+	if content, readErr := os.ReadFile(firstPath); readErr != nil || string(content) != "one-before" {
+		t.Fatal(string(content), readErr)
+	}
+	if content, readErr := os.ReadFile(secondPath); readErr != nil || string(content) != "changed elsewhere" {
+		t.Fatal(string(content), readErr)
+	}
+}
+
 func writeProposalPlan(item contracts.Task, stepID string) contracts.PlanVersion {
-	step := contracts.StepSpec{Version: contracts.SchemaVersion, StepID: stepID, Title: "Propose note change", Goal: "change the note after approval", AllowedTools: []string{"propose_write_file"}, WorkspaceScopes: []string{"."}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "exists", Type: contracts.AcceptanceFileExists, Description: "note exists", Spec: map[string]interface{}{"path": "note.txt"}}}, Risk: contracts.RiskWrite, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 2, MaxDurationMS: 1000, MaxInputTokens: 1000, MaxOutputTokens: 1000}, ExecutionMode: "AGENT"}
+	return writeProposalPlanWithTools(item, stepID, []string{"propose_write_file"})
+}
+
+func writeProposalPlanWithTools(item contracts.Task, stepID string, allowedTools []string) contracts.PlanVersion {
+	step := contracts.StepSpec{Version: contracts.SchemaVersion, StepID: stepID, Title: "Propose note change", Goal: "change the note after approval", AllowedTools: allowedTools, WorkspaceScopes: []string{"."}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "exists", Type: contracts.AcceptanceFileExists, Description: "note exists", Spec: map[string]interface{}{"path": "note.txt"}}}, Risk: contracts.RiskWrite, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 2, MaxDurationMS: 1000, MaxInputTokens: 1000, MaxOutputTokens: 1000}, ExecutionMode: "AGENT"}
 	return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: "proposal-plan-" + stepID, TaskID: item.ID, Revision: 2, ParentPlanID: "initial", Reason: "TEST", Summary: "write proposal", Steps: []contracts.StepSpec{step}, CreatedByAgent: "test", CreatedAt: time.Now().UTC()}
 }
 

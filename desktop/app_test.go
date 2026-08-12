@@ -168,7 +168,7 @@ func TestConversationShowsApprovalGatedWriteProposal(t *testing.T) {
 		t.Fatal(conversation, err)
 	}
 	turn := conversation.Turns[0]
-	if turn.Snapshot.Task.Status != contracts.TaskWaitingApproval || turn.Report.PendingWrite == nil || turn.Report.PendingWrite.Path != "note.txt" || turn.Report.PendingWrite.Content != "after" {
+	if turn.Snapshot.Task.Status != contracts.TaskWaitingApproval || turn.Report.PendingWrite == nil || len(turn.Report.PendingWrite.Writes) != 1 || turn.Report.PendingWrite.Writes[0].Path != "note.txt" || turn.Report.PendingWrite.Writes[0].Content != "after" {
 		t.Fatalf("write proposal was not reviewable in the chat: %#v", turn)
 	}
 	content, err := os.ReadFile(filepath.Join(root, "note.txt"))

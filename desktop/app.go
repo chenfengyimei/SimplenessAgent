@@ -37,11 +37,11 @@ type ConversationTurn struct {
 }
 
 type TurnReportView struct {
-	Summary      string            `json:"summary"`
-	ToolName     string            `json:"tool_name"`
-	Files        []string          `json:"files"`
-	Truncated    bool              `json:"truncated"`
-	PendingWrite *app.PendingWrite `json:"pending_write,omitempty"`
+	Summary      string                 `json:"summary"`
+	ToolName     string                 `json:"tool_name"`
+	Files        []string               `json:"files"`
+	Truncated    bool                   `json:"truncated"`
+	PendingWrite *app.PendingWriteBatch `json:"pending_write,omitempty"`
 }
 
 // NewApp creates a new App application struct
