@@ -36,7 +36,6 @@ export namespace app {
 		    return a;
 		}
 	}
-
 }
 export namespace contracts {
 
@@ -657,6 +656,7 @@ export namespace diagnostics {
 	}
 
 }
+
 export namespace main {
 
 	export class TurnReportView {
@@ -743,4 +743,5 @@ export namespace main {
 		    return a;
 		}
 	}
+
 }

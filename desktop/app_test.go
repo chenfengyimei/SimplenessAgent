@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/xm/simplenessagent/internal/app"
 	"github.com/xm/simplenessagent/internal/provider/mock"
@@ -11,6 +13,36 @@ import (
 )
 
 type memoryCredentialStore struct{ values map[string]string }
+
+type scriptedChatProvider struct {
+	mu        sync.Mutex
+	responses []contracts.ChatResponse
+	requests  []contracts.ChatRequest
+}
+
+func (p *scriptedChatProvider) Chat(_ context.Context, request contracts.ChatRequest) (contracts.ChatResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.requests = append(p.requests, request)
+	index := len(p.requests) - 1
+	if index >= len(p.responses) {
+		index = len(p.responses) - 1
+	}
+	return p.responses[index], nil
+}
+func (p *scriptedChatProvider) ChatStream(ctx context.Context, request contracts.ChatRequest, sink contracts.StreamSink) error {
+	response, err := p.Chat(ctx, request)
+	if err != nil {
+		return err
+	}
+	return sink(contracts.StreamEvent{Type: contracts.StreamEventCompleted, Response: &response})
+}
+func (*scriptedChatProvider) HealthCheck(context.Context) contracts.HealthStatus {
+	return contracts.HealthStatus{Healthy: true}
+}
+func (*scriptedChatProvider) ProbeCapabilities(context.Context) contracts.CapabilitySnapshot {
+	return contracts.CapabilitySnapshot{Version: contracts.SchemaVersion, SupportsTools: true, ProbedAt: time.Now().UTC()}
+}
 
 func (s *memoryCredentialStore) Save(id, key string) error      { s.values[id] = key; return nil }
 func (s *memoryCredentialStore) Load(id string) (string, error) { return s.values[id], nil }
@@ -65,6 +97,40 @@ func TestConversationContinuesWithoutCreatingNewRoot(t *testing.T) {
 	roots, err := desktop.ListConversations()
 	if err != nil || len(roots) != 1 {
 		t.Fatal(roots, err)
+	}
+}
+
+func TestConversationRunsModelToolLoopAndReturnsModelReply(t *testing.T) {
+	provider := &scriptedChatProvider{responses: []contracts.ChatResponse{
+		{ToolCalls: []contracts.ToolCall{{ID: "call-list", Name: "list_files", ArgumentsJSON: `{"path":".","limit":20}`}}},
+		{Text: "我已查看工作目录，当前没有需要进一步读取的文件。"},
+	}}
+	service, err := app.Open(context.Background(), app.Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) { return provider, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	desktop := &App{ctx: context.Background(), service: service, apiKeys: map[string]string{}, credentials: &memoryCredentialStore{values: map[string]string{}}}
+	workspace, err := desktop.CreateWorkspace("demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(context.Background(), contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "DESKTOP", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := desktop.StartConversation(workspace.ID, "请查看工作目录并告诉我有什么", deployment.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.requests) != 2 || len(provider.requests[0].Tools) != 3 {
+		t.Fatalf("expected model tool loop, got %#v", provider.requests)
+	}
+	if len(conversation.Messages) != 2 || conversation.Messages[1].Content != "我已查看工作目录，当前没有需要进一步读取的文件。" {
+		t.Fatalf("expected model response in conversation: %#v", conversation.Messages)
+	}
+	if len(conversation.Turns) != 1 || conversation.Turns[0].Snapshot.Task.Status != contracts.TaskCompleted || conversation.Turns[0].Report.ToolName != "列出文件" {
+		t.Fatalf("expected completed model turn with tool report: %#v", conversation.Turns)
 	}
 }
 

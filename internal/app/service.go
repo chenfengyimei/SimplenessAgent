@@ -623,7 +623,23 @@ func (s *Service) CreateTask(ctx context.Context, input CreateTaskInput) (contra
 }
 
 func minimalPlan(item contracts.Task) contracts.PlanVersion {
+	if acceptsEvidenceKind(item.Spec.AcceptanceCriteria, "AGENT_REPORT") {
+		return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: "在受控只读工具边界内理解用户请求、收集证据并给出可复核回复", CreatedByAgent: "core-conversation-bootstrap", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: "理解请求并执行只读操作", Goal: item.Goal, AllowedTools: []string{"list_files", "read_file", "search_text"}, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_agent", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的模型 Agent 报告", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: contracts.RiskRead, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 4, MaxDurationMS: int64((5 * time.Minute).Milliseconds()), MaxInputTokens: 8000, MaxOutputTokens: 2000}, ExecutionMode: "AGENT", PreferredRole: "RECON"}}}
+	}
+	return deterministicReconPlan(item)
+}
+
+func deterministicReconPlan(item contracts.Task) contracts.PlanVersion {
 	return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: "先在只读边界内侦察工作区并保存可验证报告", CreatedByAgent: "core-minimal-planner", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: "侦察工作区", Goal: "收集授权工作区的文件清单，形成可复核的侦察报告", AllowedTools: []string{"list_files", "read_file", "search_text"}, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "recon_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_recon", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的侦察报告", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}, Risk: contracts.RiskRead, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 3, MaxDurationMS: int64((5 * time.Minute).Milliseconds()), MaxInputTokens: 8000, MaxOutputTokens: 2000}, ExecutionMode: "DETERMINISTIC", PreferredRole: "RECON"}}}
+}
+
+func acceptsEvidenceKind(criteria []contracts.AcceptanceCriterion, kind string) bool {
+	for _, criterion := range criteria {
+		if criterion.Type == contracts.AcceptanceEvidenceExists && criterion.Spec["kind"] == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) RunTask(ctx context.Context, taskID string) (TaskSnapshot, error) {

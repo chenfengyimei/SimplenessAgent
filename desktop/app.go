@@ -298,7 +298,7 @@ func (a *App) StartConversation(workspaceID, message, deploymentID string) (Conv
 	if message == "" {
 		return ConversationView{}, contracts.NewError(contracts.ErrInvalidInput, "message is required")
 	}
-	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "recon_report", Type: contracts.AcceptanceEvidenceExists, Description: "deterministic workspace reconnaissance persisted", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}})
+	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: conversationAcceptance(deploymentID)})
 	if err != nil {
 		a.logError("conversation", "create conversation failed", err, map[string]string{"workspace_id": workspaceID, "deployment_id": deploymentID})
 		return ConversationView{}, err
@@ -325,7 +325,7 @@ func (a *App) SendConversationMessage(conversationID, message, deploymentID stri
 		a.logError("conversation", "read conversation before send failed", err, map[string]string{"conversation_id": conversationID})
 		return ConversationView{}, err
 	}
-	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: conversation.Task.WorkspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "recon_report", Type: contracts.AcceptanceEvidenceExists, Description: "deterministic workspace reconnaissance persisted", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}})
+	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: conversation.Task.WorkspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: conversationAcceptance(deploymentID)})
 	if err != nil {
 		a.logError("conversation", "create conversation turn failed", err, map[string]string{"conversation_id": conversationID, "deployment_id": deploymentID})
 		return ConversationView{}, err
@@ -344,18 +344,42 @@ func (a *App) SendConversationMessage(conversationID, message, deploymentID stri
 
 func (a *App) executeConversationTurn(service *app.Service, created contracts.Task, conversationID, deploymentID string) (ConversationView, error) {
 	a.logInfo("agent", "turn execution started", map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "deployment_id": deploymentID})
-	snapshot, err := service.RunTask(a.ctx, created.ID)
+	var snapshot app.TaskSnapshot
+	var err error
+	if strings.TrimSpace(deploymentID) == "" {
+		snapshot, err = service.RunTask(a.ctx, created.ID)
+	} else {
+		snapshot, err = service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: created.ID, DeploymentID: deploymentID})
+	}
 	if err != nil {
 		a.logError("agent", "turn execution failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "deployment_id": deploymentID})
-		return ConversationView{}, err
+		response := "本轮 Agent 执行失败：" + userFacingError(err) + "。详细诊断已保存到“模型与设置 → 运行诊断”。"
+		if saveErr := service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: created.ID, Role: "assistant", Content: response}); saveErr != nil {
+			return ConversationView{}, saveErr
+		}
+		return a.GetConversation(conversationID)
 	}
-	response := conversationResponse(snapshot)
+	report, reportErr := buildTurnReport(service, created.ID, snapshot)
+	if reportErr != nil {
+		a.logError("agent", "read turn report failed", reportErr, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID})
+	}
+	response := report.Summary
+	if strings.TrimSpace(response) == "" {
+		response = conversationResponse(snapshot)
+	}
 	if err = service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: created.ID, Role: "assistant", Content: response}); err != nil {
 		a.logError("conversation", "save assistant response failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID})
 		return ConversationView{}, err
 	}
 	a.logInfo("agent", "turn execution completed", map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "status": string(snapshot.Task.Status)})
 	return a.GetConversation(conversationID)
+}
+
+func conversationAcceptance(deploymentID string) []contracts.AcceptanceCriterion {
+	if strings.TrimSpace(deploymentID) == "" {
+		return []contracts.AcceptanceCriterion{{ID: "recon_report", Type: contracts.AcceptanceEvidenceExists, Description: "deterministic workspace reconnaissance persisted", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}
+	}
+	return []contracts.AcceptanceCriterion{{ID: "agent_report", Type: contracts.AcceptanceEvidenceExists, Description: "bounded model agent report persisted", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}
 }
 
 func conversationResponse(snapshot app.TaskSnapshot) string {
@@ -371,7 +395,33 @@ func buildTurnReport(service *app.Service, taskID string, snapshot app.TaskSnaps
 	if snapshot.Task.Status == contracts.TaskCompleted {
 		view.Summary = "已完成本轮只读侦察，并保存可复核的结果。"
 	}
-	content, err := service.ReadTaskArtifact(context.Background(), taskID, "RECON_REPORT")
+	content, err := service.ReadTaskArtifact(context.Background(), taskID, "AGENT_REPORT")
+	if err == nil {
+		var report contracts.AgentReport
+		if err = json.Unmarshal(content, &report); err != nil {
+			return view, err
+		}
+		view.Summary = strings.TrimSpace(report.Summary)
+		toolNames := make([]string, 0, len(report.ToolResults))
+		for _, result := range report.ToolResults {
+			if result.Data != nil {
+				if files, ok := result.Data["files"].([]interface{}); ok {
+					for _, item := range files {
+						if name, nameOK := item.(string); nameOK {
+							view.Files = append(view.Files, name)
+						}
+					}
+				}
+			}
+			toolNames = append(toolNames, chineseToolName(result))
+		}
+		view.ToolName = strings.Join(uniqueStrings(toolNames), "、")
+		if view.ToolName == "" {
+			view.ToolName = "未调用工具"
+		}
+		return view, nil
+	}
+	content, err = service.ReadTaskArtifact(context.Background(), taskID, "RECON_REPORT")
 	if err != nil {
 		return view, err
 	}
@@ -395,6 +445,38 @@ func buildTurnReport(service *app.Service, taskID string, snapshot app.TaskSnaps
 		view.Summary += " 文件清单已按安全上限截断。"
 	}
 	return view, nil
+}
+
+func chineseToolName(result contracts.ToolResult) string {
+	if _, found := result.Data["files"]; found {
+		return "列出文件"
+	}
+	if _, found := result.Data["content"]; found {
+		return "读取文件"
+	}
+	if _, found := result.Data["matches"]; found {
+		return "搜索文本"
+	}
+	return "只读工具"
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func userFacingError(err error) string {
+	if domain, ok := err.(*contracts.Error); ok {
+		return domain.Message
+	}
+	return "本地执行器发生未预期错误"
 }
 
 func compactTitle(message string) string {
