@@ -45,3 +45,7 @@ export function ProbeDeployment(arg1) {
 export function RunAgent(arg1, arg2) {
   return window['go']['main']['App']['RunAgent'](arg1, arg2);
 }
+
+export function SendMessage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendMessage'](arg1, arg2, arg3);
+}

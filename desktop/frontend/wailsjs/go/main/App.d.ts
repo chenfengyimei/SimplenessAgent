@@ -24,3 +24,5 @@ export function ListWorkspaces():Promise<Array<contracts.Workspace>>;
 export function ProbeDeployment(arg1:string):Promise<contracts.CapabilitySnapshot>;
 
 export function RunAgent(arg1:string,arg2:string):Promise<app.TaskSnapshot>;
+
+export function SendMessage(arg1:string,arg2:string,arg3:string):Promise<app.TaskSnapshot>;
