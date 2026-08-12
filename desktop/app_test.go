@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +17,11 @@ import (
 )
 
 type memoryCredentialStore struct{ values map[string]string }
+
+func desktopHashText(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
 
 type scriptedChatProvider struct {
 	mu        sync.Mutex
@@ -124,7 +132,7 @@ func TestConversationRunsModelToolLoopAndReturnsModelReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(provider.requests) != 2 || len(provider.requests[0].Tools) != 3 {
+	if len(provider.requests) != 2 || len(provider.requests[0].Tools) < 3 {
 		t.Fatalf("expected model tool loop, got %#v", provider.requests)
 	}
 	if len(conversation.Messages) != 2 || conversation.Messages[1].Content != "我已查看工作目录，当前没有需要进一步读取的文件。" {
@@ -132,6 +140,48 @@ func TestConversationRunsModelToolLoopAndReturnsModelReply(t *testing.T) {
 	}
 	if len(conversation.Turns) != 1 || conversation.Turns[0].Snapshot.Task.Status != contracts.TaskCompleted || conversation.Turns[0].Report.ToolName != "列出文件" {
 		t.Fatalf("expected completed model turn with tool report: %#v", conversation.Turns)
+	}
+}
+
+func TestConversationShowsApprovalGatedWriteProposal(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedChatProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "proposal", Name: "propose_write_file", ArgumentsJSON: `{"path":"note.txt","content":"after","expected_content_hash":"` + desktopHashText("before") + `"}`}}}}}
+	service, err := app.Open(context.Background(), app.Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) { return provider, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	desktop := &App{ctx: context.Background(), service: service, apiKeys: map[string]string{}, credentials: &memoryCredentialStore{values: map[string]string{}}}
+	workspace, err := desktop.CreateWorkspace("demo", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(context.Background(), contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "DESKTOP", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := desktop.StartConversation(workspace.ID, "把 note 改成 after", deployment.ID)
+	if err != nil || len(conversation.Turns) != 1 {
+		t.Fatal(conversation, err)
+	}
+	turn := conversation.Turns[0]
+	if turn.Snapshot.Task.Status != contracts.TaskWaitingApproval || turn.Report.PendingWrite == nil || turn.Report.PendingWrite.Path != "note.txt" || turn.Report.PendingWrite.Content != "after" {
+		t.Fatalf("write proposal was not reviewable in the chat: %#v", turn)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "note.txt"))
+	if err != nil || string(content) != "before" {
+		t.Fatal(string(content), err)
+	}
+	conversation, err = desktop.ApproveConversationWrite(turn.Report.PendingWrite.TaskID, turn.Report.PendingWrite.StepID)
+	if err != nil || conversation.Turns[0].Snapshot.Task.Status != contracts.TaskCompleted {
+		t.Fatal(conversation, err)
+	}
+	content, err = os.ReadFile(filepath.Join(root, "note.txt"))
+	if err != nil || string(content) != "after" {
+		t.Fatal(string(content), err)
 	}
 }
 

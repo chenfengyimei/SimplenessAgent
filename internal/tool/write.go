@@ -71,6 +71,9 @@ func writeChecked(target string, content []byte, expected string) (bool, error) 
 		return alreadyApplied, err
 	}
 	parent := filepath.Dir(target)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return false, err
+	}
 	temp, err := os.CreateTemp(parent, ".simpleness-write-*")
 	if err != nil {
 		return false, err

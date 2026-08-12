@@ -1,5 +1,25 @@
 export namespace app {
 
+	export class PendingWrite {
+	    task_id: string;
+	    step_id: string;
+	    path: string;
+	    content: string;
+	    expected_content_hash: string;
+
+	    static createFrom(source: any = {}) {
+	        return new PendingWrite(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.task_id = source["task_id"];
+	        this.step_id = source["step_id"];
+	        this.path = source["path"];
+	        this.content = source["content"];
+	        this.expected_content_hash = source["expected_content_hash"];
+	    }
+	}
 	export class TaskSnapshot {
 	    task: contracts.Task;
 	    plan: contracts.PlanVersion;
@@ -36,7 +56,9 @@ export namespace app {
 		    return a;
 		}
 	}
+
 }
+
 export namespace contracts {
 
 	export class AcceptanceCriterion {
@@ -612,7 +634,9 @@ export namespace contracts {
 		    return a;
 		}
 	}
+
 }
+
 export namespace diagnostics {
 
 	export class Entry {
@@ -664,6 +688,7 @@ export namespace main {
 	    tool_name: string;
 	    files: string[];
 	    truncated: boolean;
+	    pending_write?: app.PendingWrite;
 
 	    static createFrom(source: any = {}) {
 	        return new TurnReportView(source);
@@ -675,7 +700,26 @@ export namespace main {
 	        this.tool_name = source["tool_name"];
 	        this.files = source["files"];
 	        this.truncated = source["truncated"];
+	        this.pending_write = this.convertValues(source["pending_write"], app.PendingWrite);
 	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class ConversationTurn {
 	    snapshot: app.TaskSnapshot;

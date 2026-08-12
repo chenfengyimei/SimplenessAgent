@@ -41,6 +41,20 @@ func TestCreateRejectsInvalidPlanAndWriteTool(t *testing.T) {
 	})
 }
 
+func TestCreateAcceptsReadInspectionAndApprovalGatedWriteProposal(t *testing.T) {
+	response := `{"summary":"edit","steps":[{"version":1,"step_id":"edit","title":"Edit","goal":"Inspect and propose one change","allowed_tools":["file_info","propose_write_file"],"workspace_scopes":["."],"acceptance_criteria":[{"id":"evidence","type":"EVIDENCE_EXISTS","description":"report","spec":{}}],"risk":"WRITE","budget":{"max_attempts":1,"max_iterations":2,"max_duration_ms":1000,"max_input_tokens":10,"max_output_tokens":10}}]}`
+	planner, err := New(&fakeProvider{response: response})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeProposal := contracts.ToolDefinition{Name: "propose_write_file", RiskClass: contracts.RiskWrite, ParametersSchema: map[string]interface{}{"type": "object"}}
+	fileInfo := contracts.ToolDefinition{Name: "file_info", RiskClass: contracts.RiskRead, ParametersSchema: map[string]interface{}{"type": "object"}}
+	created, err := planner.Create(context.Background(), Input{DeploymentID: "dep", Task: testTask(), AvailableTools: []contracts.ToolDefinition{fileInfo, writeProposal}})
+	if err != nil || len(created.Steps) != 1 || created.Steps[0].Risk != contracts.RiskWrite {
+		t.Fatalf("approval-gated WRITE plan was not accepted: %#v, %v", created, err)
+	}
+}
+
 func TestCreateAcceptsPlanWrappedInJSONCodeFence(t *testing.T) {
 	response := "```json\n{\"summary\":\"inspect\",\"steps\":[{\"version\":1,\"step_id\":\"inspect\",\"title\":\"Inspect\",\"goal\":\"Read files\",\"allowed_tools\":[\"list_files\"],\"workspace_scopes\":[\".\"],\"acceptance_criteria\":[{\"id\":\"evidence\",\"type\":\"EVIDENCE_EXISTS\",\"description\":\"report\",\"spec\":{}}],\"risk\":\"READ\",\"budget\":{\"max_attempts\":1,\"max_iterations\":2,\"max_duration_ms\":1000,\"max_input_tokens\":10,\"max_output_tokens\":10}}]}\n```"
 	planner, err := New(&fakeProvider{response: response})

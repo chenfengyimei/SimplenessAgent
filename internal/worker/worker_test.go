@@ -177,6 +177,27 @@ func TestRunStopsAtBudgetAndRejectsWriteTools(t *testing.T) {
 	assertCode(t, err, contracts.ErrRequestTimeout)
 }
 
+func TestRunStopsAfterApprovalGatedWriteProposal(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "proposal", Name: "propose_write_file", ArgumentsJSON: `{}`}}}}}
+	registry := tool.NewRegistry()
+	if err := registry.Register(contracts.ToolDefinition{Name: "propose_write_file", RiskClass: contracts.RiskWrite, ParametersSchema: map[string]interface{}{"type": "object", "additionalProperties": false}}, func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		return contracts.ToolResult{Status: "WAITING_APPROVAL", Summary: "waiting"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	executor, err := New(provider, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := testStep(2)
+	step.Risk = contracts.RiskWrite
+	step.AllowedTools = []string{"propose_write_file"}
+	result, err := executor.Run(context.Background(), Input{Step: step})
+	if err != nil || len(result.ToolResults) != 1 || result.ToolResults[0].Status != "WAITING_APPROVAL" || len(provider.requests) != 1 {
+		t.Fatalf("proposal should pause the loop without a direct write: result=%#v err=%v requests=%#v", result, err, provider.requests)
+	}
+}
+
 func testRegistry(t *testing.T, risk contracts.RiskClass, schema map[string]interface{}, handler tool.Handler) *tool.Registry {
 	t.Helper()
 	registry := tool.NewRegistry()

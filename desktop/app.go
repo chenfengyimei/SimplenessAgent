@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/xm/simplenessagent/internal/app"
 	"github.com/xm/simplenessagent/internal/diagnostics"
@@ -36,10 +37,11 @@ type ConversationTurn struct {
 }
 
 type TurnReportView struct {
-	Summary   string   `json:"summary"`
-	ToolName  string   `json:"tool_name"`
-	Files     []string `json:"files"`
-	Truncated bool     `json:"truncated"`
+	Summary      string            `json:"summary"`
+	ToolName     string            `json:"tool_name"`
+	Files        []string          `json:"files"`
+	Truncated    bool              `json:"truncated"`
+	PendingWrite *app.PendingWrite `json:"pending_write,omitempty"`
 }
 
 // NewApp creates a new App application struct
@@ -286,6 +288,26 @@ func (a *App) RunAgent(taskID, deploymentID string) (app.TaskSnapshot, error) {
 	return service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: taskID, DeploymentID: deploymentID})
 }
 
+// ApproveConversationWrite executes the exact pending file proposal shown in
+// the chat after the user has explicitly approved it.
+func (a *App) ApproveConversationWrite(taskID, stepID string) (ConversationView, error) {
+	service, err := a.core()
+	if err != nil {
+		return ConversationView{}, err
+	}
+	snapshot, err := service.ApprovePendingWrite(a.ctx, taskID, stepID, time.Now().Add(10*time.Minute))
+	if err != nil {
+		a.logError("agent", "approve conversation write failed", err, map[string]string{"turn_task_id": taskID, "step_id": stepID})
+		return ConversationView{}, err
+	}
+	conversationID := snapshot.Task.ConversationID
+	if conversationID == "" {
+		conversationID = snapshot.Task.ID
+	}
+	a.logInfo("agent", "approved conversation write completed", map[string]string{"conversation_id": conversationID, "turn_task_id": taskID, "step_id": stepID})
+	return a.GetConversation(conversationID)
+}
+
 // SendMessage creates a scoped task from a user message, then lets the Agent
 // generate and execute its read-only plan. The task/event store remains the
 // durable conversation record behind the desktop chat surface.
@@ -298,7 +320,7 @@ func (a *App) StartConversation(workspaceID, message, deploymentID string) (Conv
 	if message == "" {
 		return ConversationView{}, contracts.NewError(contracts.ErrInvalidInput, "message is required")
 	}
-	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: conversationAcceptance(deploymentID)})
+	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: conversationAcceptance(deploymentID), AllowWriteProposals: strings.TrimSpace(deploymentID) != ""})
 	if err != nil {
 		a.logError("conversation", "create conversation failed", err, map[string]string{"workspace_id": workspaceID, "deployment_id": deploymentID})
 		return ConversationView{}, err
@@ -325,7 +347,7 @@ func (a *App) SendConversationMessage(conversationID, message, deploymentID stri
 		a.logError("conversation", "read conversation before send failed", err, map[string]string{"conversation_id": conversationID})
 		return ConversationView{}, err
 	}
-	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: conversation.Task.WorkspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: conversationAcceptance(deploymentID)})
+	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: conversation.Task.WorkspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: conversationAcceptance(deploymentID), AllowWriteProposals: strings.TrimSpace(deploymentID) != ""})
 	if err != nil {
 		a.logError("conversation", "create conversation turn failed", err, map[string]string{"conversation_id": conversationID, "deployment_id": deploymentID})
 		return ConversationView{}, err
@@ -425,7 +447,24 @@ func buildTurnReport(service *app.Service, taskID string, snapshot app.TaskSnaps
 		if view.ToolName == "" {
 			view.ToolName = "未调用工具"
 		}
+		if snapshot.Task.Status == contracts.TaskWaitingApproval {
+			pending, pendingErr := service.PendingWrite(context.Background(), taskID)
+			if pendingErr == nil {
+				view.PendingWrite = &pending
+				view.Summary = "Agent 已准备好工作区修改，正在等待你的确认；确认后将原子写入并完成验证。"
+				view.ToolName = "等待写入审批"
+			}
+		}
 		return view, nil
+	}
+	if snapshot.Task.Status == contracts.TaskWaitingApproval {
+		pending, pendingErr := service.PendingWrite(context.Background(), taskID)
+		if pendingErr == nil {
+			view.PendingWrite = &pending
+			view.Summary = "Agent 已准备好工作区修改，正在等待你的确认；确认后将原子写入并完成验证。"
+			view.ToolName = "等待写入审批"
+			return view, nil
+		}
 	}
 	content, err = service.ReadTaskArtifact(context.Background(), taskID, "RECON_REPORT")
 	if err != nil {
