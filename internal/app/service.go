@@ -905,8 +905,8 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 		statusByID[state.StepID] = state.Status
 	}
 	ready := plan.ReadySteps(planVersion, statusByID)
-	if len(ready) != 1 {
-		return TaskSnapshot{}, contracts.NewError(contracts.ErrPlanInvalid, "model runner requires exactly one ready step")
+	if len(ready) == 0 {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrPlanInvalid, "model runner found no executable step before the plan reached a terminal state")
 	}
 	step, found := findStep(planVersion, ready[0])
 	if !found || step.Risk != contracts.RiskRead {
@@ -997,6 +997,30 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 		return TaskSnapshot{}, err
 	}
 	return s.CheckpointTask(ctx, item.ID)
+}
+
+// RunModelPlan drives a locally validated plan to its terminal task state.
+// Steps are selected in their persisted plan order, including when a DAG has
+// multiple independent ready nodes; this keeps desktop execution auditable and
+// deterministic until a concurrent runner is introduced.
+func (s *Service) RunModelPlan(ctx context.Context, input RunModelStepInput) (TaskSnapshot, error) {
+	for {
+		snapshot, err := s.GetTaskSnapshot(ctx, input.TaskID)
+		if err != nil {
+			return TaskSnapshot{}, err
+		}
+		switch snapshot.Task.Status {
+		case contracts.TaskCompleted, contracts.TaskFailed, contracts.TaskCancelled, contracts.TaskBlocked, contracts.TaskWaitingApproval, contracts.TaskWaitingUser, contracts.TaskPaused:
+			return snapshot, nil
+		case contracts.TaskReady, contracts.TaskRunning:
+			// Continue below.
+		default:
+			return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "model plan is not runnable in the current task state")
+		}
+		if _, err := s.RunModelStep(ctx, input); err != nil {
+			return TaskSnapshot{}, err
+		}
+	}
 }
 
 func findStep(planVersion contracts.PlanVersion, stepID string) (contracts.StepSpec, bool) {

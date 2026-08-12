@@ -11,6 +11,7 @@ interface Window { go: { main: { App: {
   ProbeDeployment(deploymentID: string): Promise<unknown>
   GeneratePlan(taskID: string, deploymentID: string): Promise<unknown>
   RunAgent(taskID: string, deploymentID: string): Promise<unknown>
+  SendMessage(workspaceID: string, message: string, deploymentID: string): Promise<unknown>
 } } } }
 
 declare module '*.vue' {

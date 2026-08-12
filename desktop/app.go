@@ -210,7 +210,37 @@ func (a *App) RunAgent(taskID, deploymentID string) (app.TaskSnapshot, error) {
 	if err != nil {
 		return app.TaskSnapshot{}, err
 	}
-	return service.RunModelStep(a.ctx, app.RunModelStepInput{TaskID: taskID, DeploymentID: deploymentID})
+	return service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: taskID, DeploymentID: deploymentID})
+}
+
+// SendMessage creates a scoped task from a user message, then lets the Agent
+// generate and execute its read-only plan. The task/event store remains the
+// durable conversation record behind the desktop chat surface.
+func (a *App) SendMessage(workspaceID, message, deploymentID string) (app.TaskSnapshot, error) {
+	service, err := a.core()
+	if err != nil {
+		return app.TaskSnapshot{}, err
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return app.TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidInput, "message is required")
+	}
+	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "agent_report", Type: contracts.AcceptanceEvidenceExists, Description: "bounded agent report persisted", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}})
+	if err != nil {
+		return app.TaskSnapshot{}, err
+	}
+	if _, err = service.GeneratePlan(a.ctx, created.ID, deploymentID); err != nil {
+		return app.TaskSnapshot{}, err
+	}
+	return service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: created.ID, DeploymentID: deploymentID})
+}
+
+func compactTitle(message string) string {
+	value := []rune(strings.Join(strings.Fields(message), " "))
+	if len(value) > 32 {
+		return string(value[:32]) + "…"
+	}
+	return string(value)
 }
 
 func (a *App) GetTaskSnapshot(taskID string) (app.TaskSnapshot, error) {

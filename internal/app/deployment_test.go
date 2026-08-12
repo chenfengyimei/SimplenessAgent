@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/xm/simplenessagent/internal/provider/mock"
+	"github.com/xm/simplenessagent/internal/task"
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
 
@@ -242,6 +243,53 @@ func TestRunModelStepPersistsAgentReportAndVerifiesTask(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("model execution state changes were not audited")
+	}
+}
+
+func TestRunModelPlanExecutesEverySequentialStep(t *testing.T) {
+	ctx := context.Background()
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) {
+		return mock.Provider{Response: "completed read-only step"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "run plan", Goal: "inspect", AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "agent_report", Type: contracts.AcceptanceEvidenceExists, Description: "report", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := service.store.GetLatestPlan(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := current.Steps[0]
+	first.StepID = task.NewID("stp")
+	second := first
+	second.StepID = task.NewID("stp")
+	second.Title = "Second"
+	second.Dependencies = []string{first.StepID}
+	current.Steps = []contracts.StepSpec{first, second}
+	current.PlanID = task.NewID("pln")
+	current.Revision++
+	event, err := service.newEvent(ctx, created.ID, "PLAN_CREATED", map[string]interface{}{"plan_id": current.PlanID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.store.CreatePlan(ctx, current, event); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.RunModelPlan(ctx, RunModelStepInput{TaskID: created.ID, DeploymentID: deployment.ID})
+	if err != nil || snapshot.Task.Status != contracts.TaskCompleted || len(snapshot.Steps) != 2 || snapshot.Steps[0].Status != contracts.StepCompleted || snapshot.Steps[1].Status != contracts.StepCompleted {
+		t.Fatal(snapshot, err)
 	}
 }
 
