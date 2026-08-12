@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/xm/simplenessagent/internal/app"
+	"github.com/xm/simplenessagent/internal/diagnostics"
 	"github.com/xm/simplenessagent/internal/provider/openai"
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
@@ -20,6 +21,7 @@ type App struct {
 	openErr     error
 	apiKeys     map[string]string
 	credentials credentialStore
+	logger      *diagnostics.Logger
 }
 
 type ConversationView struct {
@@ -54,7 +56,12 @@ func (a *App) startup(ctx context.Context) {
 		a.openErr = err
 		return
 	}
+	a.logger, _ = diagnostics.Open(filepath.Join(dataDir, "logs"))
+	a.logInfo("desktop", "application startup", nil)
 	a.service, a.openErr = app.Open(ctx, app.Config{DataDir: dataDir, ResolveProvider: a.resolveProvider})
+	if a.openErr != nil {
+		a.logError("desktop", "core open failed", a.openErr, nil)
+	}
 }
 
 func (a *App) resolveProvider(deployment contracts.Deployment) (contracts.ChatProvider, error) {
@@ -74,6 +81,7 @@ func (a *App) resolveProvider(deployment contracts.Deployment) (contracts.ChatPr
 }
 
 func (a *App) shutdown(_ context.Context) {
+	a.logInfo("desktop", "application shutdown", nil)
 	if a.service != nil {
 		_ = a.service.Close()
 	}
@@ -113,7 +121,11 @@ func (a *App) ListConversations() ([]contracts.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return service.ListConversationRoots(a.ctx)
+	items, err := service.ListConversationRoots(a.ctx)
+	if err != nil {
+		a.logError("conversation", "list conversations failed", err, nil)
+	}
+	return items, err
 }
 
 func (a *App) GetConversation(conversationID string) (ConversationView, error) {
@@ -123,10 +135,12 @@ func (a *App) GetConversation(conversationID string) (ConversationView, error) {
 	}
 	conversation, err := service.GetTaskSnapshot(a.ctx, conversationID)
 	if err != nil {
+		a.logError("conversation", "read conversation failed", err, map[string]string{"conversation_id": conversationID})
 		return ConversationView{}, err
 	}
 	messages, err := service.ListConversationMessages(a.ctx, conversationID)
 	if err != nil {
+		a.logError("conversation", "read messages failed", err, map[string]string{"conversation_id": conversationID})
 		return ConversationView{}, err
 	}
 	turns := make([]ConversationTurn, 0, len(messages))
@@ -286,9 +300,12 @@ func (a *App) StartConversation(workspaceID, message, deploymentID string) (Conv
 	}
 	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "recon_report", Type: contracts.AcceptanceEvidenceExists, Description: "deterministic workspace reconnaissance persisted", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}})
 	if err != nil {
+		a.logError("conversation", "create conversation failed", err, map[string]string{"workspace_id": workspaceID, "deployment_id": deploymentID})
 		return ConversationView{}, err
 	}
+	a.logInfo("conversation", "conversation started", map[string]string{"conversation_id": created.ID, "workspace_id": workspaceID, "deployment_id": deploymentID})
 	if err = service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: created.ID, TurnTaskID: created.ID, Role: "user", Content: message}); err != nil {
+		a.logError("conversation", "save initial user message failed", err, map[string]string{"conversation_id": created.ID})
 		return ConversationView{}, err
 	}
 	return a.executeConversationTurn(service, created, created.ID, deploymentID)
@@ -305,31 +322,39 @@ func (a *App) SendConversationMessage(conversationID, message, deploymentID stri
 	}
 	conversation, err := service.GetTaskSnapshot(a.ctx, conversationID)
 	if err != nil {
+		a.logError("conversation", "read conversation before send failed", err, map[string]string{"conversation_id": conversationID})
 		return ConversationView{}, err
 	}
 	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: conversation.Task.WorkspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "recon_report", Type: contracts.AcceptanceEvidenceExists, Description: "deterministic workspace reconnaissance persisted", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}})
 	if err != nil {
+		a.logError("conversation", "create conversation turn failed", err, map[string]string{"conversation_id": conversationID, "deployment_id": deploymentID})
 		return ConversationView{}, err
 	}
 	created.ConversationID = conversationID
 	if err = service.SetConversationID(a.ctx, created.ID, conversationID); err != nil {
+		a.logError("conversation", "link conversation turn failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID})
 		return ConversationView{}, err
 	}
 	if err = service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: created.ID, Role: "user", Content: message}); err != nil {
+		a.logError("conversation", "save user message failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID})
 		return ConversationView{}, err
 	}
 	return a.executeConversationTurn(service, created, conversationID, deploymentID)
 }
 
 func (a *App) executeConversationTurn(service *app.Service, created contracts.Task, conversationID, deploymentID string) (ConversationView, error) {
+	a.logInfo("agent", "turn execution started", map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "deployment_id": deploymentID})
 	snapshot, err := service.RunTask(a.ctx, created.ID)
 	if err != nil {
+		a.logError("agent", "turn execution failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "deployment_id": deploymentID})
 		return ConversationView{}, err
 	}
 	response := conversationResponse(snapshot)
 	if err = service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: created.ID, Role: "assistant", Content: response}); err != nil {
+		a.logError("conversation", "save assistant response failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID})
 		return ConversationView{}, err
 	}
+	a.logInfo("agent", "turn execution completed", map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "status": string(snapshot.Task.Status)})
 	return a.GetConversation(conversationID)
 }
 
@@ -394,6 +419,43 @@ func (a *App) DataDir() (string, error) {
 		return "", err
 	}
 	return service.DataDir(), nil
+}
+
+// ListDiagnosticLogs returns recent structured, local-only entries. API keys
+// and similarly named fields are redacted before a line is ever written.
+func (a *App) ListDiagnosticLogs(limit int) ([]diagnostics.Entry, error) {
+	if a.logger == nil {
+		return []diagnostics.Entry{}, nil
+	}
+	return a.logger.Query(limit)
+}
+
+// RecordClientLog lets the WebView report rendering and bridge failures that
+// would otherwise look like a black screen with no actionable server trace.
+func (a *App) RecordClientLog(level, message string, fields map[string]string) {
+	if strings.EqualFold(level, "error") {
+		a.logError("frontend", message, nil, fields)
+		return
+	}
+	a.logInfo("frontend", message, fields)
+}
+
+func (a *App) logInfo(component, message string, fields map[string]string) {
+	if a.logger != nil {
+		a.logger.Info(component, message, fields)
+	}
+}
+
+func (a *App) logError(component, message string, err error, fields map[string]string) {
+	if err != nil {
+		if fields == nil {
+			fields = map[string]string{}
+		}
+		fields["error"] = err.Error()
+	}
+	if a.logger != nil {
+		a.logger.Error(component, message, fields)
+	}
 }
 
 func desktopDataDir() (string, error) {

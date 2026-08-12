@@ -38,6 +38,10 @@ export function ListDeployments() {
   return window['go']['main']['App']['ListDeployments']();
 }
 
+export function ListDiagnosticLogs(arg1) {
+  return window['go']['main']['App']['ListDiagnosticLogs'](arg1);
+}
+
 export function ListTasks() {
   return window['go']['main']['App']['ListTasks']();
 }
@@ -48,6 +52,10 @@ export function ListWorkspaces() {
 
 export function ProbeDeployment(arg1) {
   return window['go']['main']['App']['ProbeDeployment'](arg1);
+}
+
+export function RecordClientLog(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RecordClientLog'](arg1, arg2, arg3);
 }
 
 export function RunAgent(arg1, arg2) {

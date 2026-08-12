@@ -15,6 +15,8 @@ interface Window { go: { main: { App: {
   GetConversation(conversationID: string): Promise<unknown>
   StartConversation(workspaceID: string, message: string, deploymentID: string): Promise<unknown>
   SendConversationMessage(conversationID: string, message: string, deploymentID: string): Promise<unknown>
+  ListDiagnosticLogs(limit: number): Promise<unknown[]>
+  RecordClientLog(level: string, message: string, fields: Record<string, string>): Promise<void>
 } } } }
 
 declare module '*.vue' {

@@ -3,6 +3,7 @@
 import {contracts} from '../models';
 import {app} from '../models';
 import {main} from '../models';
+import {diagnostics} from '../models';
 
 export function ConfigureOpenAICompatibleDeployment(arg1:string,arg2:string,arg3:string,arg4:string):Promise<contracts.Deployment>;
 
@@ -22,11 +23,15 @@ export function ListConversations():Promise<Array<contracts.Task>>;
 
 export function ListDeployments():Promise<Array<contracts.Deployment>>;
 
+export function ListDiagnosticLogs(arg1:number):Promise<Array<diagnostics.Entry>>;
+
 export function ListTasks():Promise<Array<app.TaskSnapshot>>;
 
 export function ListWorkspaces():Promise<Array<contracts.Workspace>>;
 
 export function ProbeDeployment(arg1:string):Promise<contracts.CapabilitySnapshot>;
+
+export function RecordClientLog(arg1:string,arg2:string,arg3:Record<string, string>):Promise<void>;
 
 export function RunAgent(arg1:string,arg2:string):Promise<app.TaskSnapshot>;
 
