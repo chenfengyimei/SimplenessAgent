@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,24 @@ type App struct {
 	openErr     error
 	apiKeys     map[string]string
 	credentials credentialStore
+}
+
+type ConversationView struct {
+	Conversation contracts.Task                  `json:"conversation"`
+	Messages     []contracts.ConversationMessage `json:"messages"`
+	Turns        []ConversationTurn              `json:"turns"`
+}
+
+type ConversationTurn struct {
+	Snapshot app.TaskSnapshot `json:"snapshot"`
+	Report   TurnReportView   `json:"report"`
+}
+
+type TurnReportView struct {
+	Summary   string   `json:"summary"`
+	ToolName  string   `json:"tool_name"`
+	Files     []string `json:"files"`
+	Truncated bool     `json:"truncated"`
 }
 
 // NewApp creates a new App application struct
@@ -87,6 +106,46 @@ func (a *App) ListTasks() ([]app.TaskSnapshot, error) {
 		result = append(result, snapshot)
 	}
 	return result, nil
+}
+
+func (a *App) ListConversations() ([]contracts.Task, error) {
+	service, err := a.core()
+	if err != nil {
+		return nil, err
+	}
+	return service.ListConversationRoots(a.ctx)
+}
+
+func (a *App) GetConversation(conversationID string) (ConversationView, error) {
+	service, err := a.core()
+	if err != nil {
+		return ConversationView{}, err
+	}
+	conversation, err := service.GetTaskSnapshot(a.ctx, conversationID)
+	if err != nil {
+		return ConversationView{}, err
+	}
+	messages, err := service.ListConversationMessages(a.ctx, conversationID)
+	if err != nil {
+		return ConversationView{}, err
+	}
+	turns := make([]ConversationTurn, 0, len(messages))
+	seenTurns := map[string]bool{}
+	for _, message := range messages {
+		if message.TurnTaskID == "" || seenTurns[message.TurnTaskID] {
+			continue
+		}
+		seenTurns[message.TurnTaskID] = true
+		snapshot, snapshotErr := service.GetTaskSnapshot(a.ctx, message.TurnTaskID)
+		if snapshotErr == nil {
+			report, reportErr := buildTurnReport(service, message.TurnTaskID, snapshot)
+			if reportErr != nil {
+				report = TurnReportView{Summary: "本轮已保存执行记录；报告内容暂不可读取。"}
+			}
+			turns = append(turns, ConversationTurn{Snapshot: snapshot, Report: report})
+		}
+	}
+	return ConversationView{Conversation: conversation.Task, Messages: messages, Turns: turns}, nil
 }
 
 func (a *App) ListWorkspaces() ([]contracts.Workspace, error) {
@@ -216,23 +275,101 @@ func (a *App) RunAgent(taskID, deploymentID string) (app.TaskSnapshot, error) {
 // SendMessage creates a scoped task from a user message, then lets the Agent
 // generate and execute its read-only plan. The task/event store remains the
 // durable conversation record behind the desktop chat surface.
-func (a *App) SendMessage(workspaceID, message, deploymentID string) (app.TaskSnapshot, error) {
+func (a *App) StartConversation(workspaceID, message, deploymentID string) (ConversationView, error) {
 	service, err := a.core()
 	if err != nil {
-		return app.TaskSnapshot{}, err
+		return ConversationView{}, err
 	}
 	message = strings.TrimSpace(message)
 	if message == "" {
-		return app.TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidInput, "message is required")
+		return ConversationView{}, contracts.NewError(contracts.ErrInvalidInput, "message is required")
 	}
 	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "recon_report", Type: contracts.AcceptanceEvidenceExists, Description: "deterministic workspace reconnaissance persisted", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}})
 	if err != nil {
-		return app.TaskSnapshot{}, err
+		return ConversationView{}, err
 	}
-	// Start each chat turn with the small, deterministic reconnaissance plan
-	// created by Core. This avoids requiring small local/API models to emit a
-	// complex plan schema or tool call before the user sees useful results.
-	return service.RunTask(a.ctx, created.ID)
+	if err = service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: created.ID, TurnTaskID: created.ID, Role: "user", Content: message}); err != nil {
+		return ConversationView{}, err
+	}
+	return a.executeConversationTurn(service, created, created.ID, deploymentID)
+}
+
+func (a *App) SendConversationMessage(conversationID, message, deploymentID string) (ConversationView, error) {
+	service, err := a.core()
+	if err != nil {
+		return ConversationView{}, err
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ConversationView{}, contracts.NewError(contracts.ErrInvalidInput, "message is required")
+	}
+	conversation, err := service.GetTaskSnapshot(a.ctx, conversationID)
+	if err != nil {
+		return ConversationView{}, err
+	}
+	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: conversation.Task.WorkspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "recon_report", Type: contracts.AcceptanceEvidenceExists, Description: "deterministic workspace reconnaissance persisted", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}})
+	if err != nil {
+		return ConversationView{}, err
+	}
+	created.ConversationID = conversationID
+	if err = service.SetConversationID(a.ctx, created.ID, conversationID); err != nil {
+		return ConversationView{}, err
+	}
+	if err = service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: created.ID, Role: "user", Content: message}); err != nil {
+		return ConversationView{}, err
+	}
+	return a.executeConversationTurn(service, created, conversationID, deploymentID)
+}
+
+func (a *App) executeConversationTurn(service *app.Service, created contracts.Task, conversationID, deploymentID string) (ConversationView, error) {
+	snapshot, err := service.RunTask(a.ctx, created.ID)
+	if err != nil {
+		return ConversationView{}, err
+	}
+	response := conversationResponse(snapshot)
+	if err = service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: created.ID, Role: "assistant", Content: response}); err != nil {
+		return ConversationView{}, err
+	}
+	return a.GetConversation(conversationID)
+}
+
+func conversationResponse(snapshot app.TaskSnapshot) string {
+	status := "已完成"
+	if snapshot.Task.Status != contracts.TaskCompleted {
+		status = "执行结束，当前状态为 " + string(snapshot.Task.Status)
+	}
+	return status + "。我已在授权工作区内完成只读侦察，并保存了可复核的文件清单与证据。"
+}
+
+func buildTurnReport(service *app.Service, taskID string, snapshot app.TaskSnapshot) (TurnReportView, error) {
+	view := TurnReportView{Summary: "本轮已生成只读执行记录。"}
+	if snapshot.Task.Status == contracts.TaskCompleted {
+		view.Summary = "已完成本轮只读侦察，并保存可复核的结果。"
+	}
+	content, err := service.ReadTaskArtifact(context.Background(), taskID, "RECON_REPORT")
+	if err != nil {
+		return view, err
+	}
+	var report struct {
+		Result contracts.ToolResult `json:"result"`
+	}
+	if err = json.Unmarshal(content, &report); err != nil {
+		return view, err
+	}
+	view.ToolName = "列出文件"
+	view.Truncated, _ = report.Result.Data["truncated"].(bool)
+	if files, ok := report.Result.Data["files"].([]interface{}); ok {
+		for _, item := range files {
+			if name, nameOK := item.(string); nameOK {
+				view.Files = append(view.Files, name)
+			}
+		}
+	}
+	view.Summary = fmt.Sprintf("已调用“列出文件”工具，在授权工作区发现 %d 个文件。", len(view.Files))
+	if view.Truncated {
+		view.Summary += " 文件清单已按安全上限截断。"
+	}
+	return view, nil
 }
 
 func compactTitle(message string) string {

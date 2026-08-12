@@ -140,7 +140,7 @@ func (s *Store) CreateTask(ctx context.Context, task contracts.Task, event contr
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,version,workspace_id,title,goal,status,spec_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, task.ID, task.Version, task.WorkspaceID, task.Title, task.Goal, task.Status, string(specJSON), timestamp(task.CreatedAt), timestamp(task.UpdatedAt))
+	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,version,workspace_id,conversation_id,title,goal,status,spec_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, task.ID, task.Version, task.WorkspaceID, nullIfEmpty(task.ConversationID), task.Title, task.Goal, task.Status, string(specJSON), timestamp(task.CreatedAt), timestamp(task.UpdatedAt))
 	if err == nil {
 		err = s.appendEventTx(ctx, tx, event)
 	}
@@ -154,7 +154,7 @@ func (s *Store) CreateTask(ctx context.Context, task contracts.Task, event contr
 func (s *Store) GetTask(ctx context.Context, id string) (contracts.Task, error) {
 	var item contracts.Task
 	var spec, created, updated string
-	err := s.db.QueryRowContext(ctx, `SELECT id,version,workspace_id,title,goal,status,spec_json,created_at,updated_at FROM tasks WHERE id=?`, id).Scan(&item.ID, &item.Version, &item.WorkspaceID, &item.Title, &item.Goal, &item.Status, &spec, &created, &updated)
+	err := s.db.QueryRowContext(ctx, `SELECT id,version,workspace_id,COALESCE(conversation_id,''),title,goal,status,spec_json,created_at,updated_at FROM tasks WHERE id=?`, id).Scan(&item.ID, &item.Version, &item.WorkspaceID, &item.ConversationID, &item.Title, &item.Goal, &item.Status, &spec, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return item, contracts.NewError(contracts.ErrNotFound, "task not found")
 	}
@@ -170,7 +170,7 @@ func (s *Store) GetTask(ctx context.Context, id string) (contracts.Task, error) 
 }
 
 func (s *Store) ListTasks(ctx context.Context, workspaceID string) ([]contracts.Task, error) {
-	query := `SELECT id,version,workspace_id,title,goal,status,spec_json,created_at,updated_at FROM tasks`
+	query := `SELECT id,version,workspace_id,COALESCE(conversation_id,''),title,goal,status,spec_json,created_at,updated_at FROM tasks`
 	args := []interface{}{}
 	if workspaceID != "" {
 		query += ` WHERE workspace_id=?`
@@ -186,7 +186,7 @@ func (s *Store) ListTasks(ctx context.Context, workspaceID string) ([]contracts.
 	for rows.Next() {
 		var item contracts.Task
 		var spec, created, updated string
-		if err := rows.Scan(&item.ID, &item.Version, &item.WorkspaceID, &item.Title, &item.Goal, &item.Status, &spec, &created, &updated); err != nil {
+		if err := rows.Scan(&item.ID, &item.Version, &item.WorkspaceID, &item.ConversationID, &item.Title, &item.Goal, &item.Status, &spec, &created, &updated); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(spec), &item.Spec); err != nil {

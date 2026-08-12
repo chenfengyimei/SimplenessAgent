@@ -142,12 +142,24 @@ type Task struct {
 	ID          string     `json:"id"`
 	Version     int        `json:"version"`
 	WorkspaceID string     `json:"workspace_id"`
+	ConversationID string   `json:"conversation_id,omitempty"`
 	Title       string     `json:"title"`
 	Goal        string     `json:"goal"`
 	Status      TaskStatus `json:"status"`
 	Spec        TaskSpec   `json:"spec"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// ConversationMessage is a durable user or assistant chat turn. A completed
+// assistant turn may reference its isolated execution Task for audit details.
+type ConversationMessage struct {
+	ID             string    `json:"message_id"`
+	ConversationID string    `json:"conversation_id"`
+	TurnTaskID     string    `json:"turn_task_id,omitempty"`
+	Role           string    `json:"role"`
+	Content        string    `json:"content"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type PlanVersion struct {

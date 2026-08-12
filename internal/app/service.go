@@ -83,11 +83,55 @@ func (s *Service) ListTasks(ctx context.Context, workspaceID string) ([]contract
 	return s.store.ListTasks(ctx, workspaceID)
 }
 
+func (s *Service) ListConversationRoots(ctx context.Context) ([]contracts.Task, error) {
+	return s.store.ListConversationRoots(ctx)
+}
+
+func (s *Service) ListConversationMessages(ctx context.Context, conversationID string) ([]contracts.ConversationMessage, error) {
+	return s.store.ListConversationMessages(ctx, conversationID)
+}
+
+func (s *Service) SaveConversationMessage(ctx context.Context, message contracts.ConversationMessage) error {
+	if strings.TrimSpace(message.ConversationID) == "" || strings.TrimSpace(message.Role) == "" || strings.TrimSpace(message.Content) == "" {
+		return contracts.NewError(contracts.ErrInvalidInput, "conversation ID, role and content are required")
+	}
+	if message.ID == "" {
+		message.ID = task.NewID("msg")
+	}
+	if message.CreatedAt.IsZero() {
+		message.CreatedAt = time.Now().UTC()
+	}
+	return s.store.CreateConversationMessage(ctx, message)
+}
+
+func (s *Service) SetConversationID(ctx context.Context, taskID, conversationID string) error {
+	if strings.TrimSpace(taskID) == "" || strings.TrimSpace(conversationID) == "" {
+		return contracts.NewError(contracts.ErrInvalidInput, "task ID and conversation ID are required")
+	}
+	return s.store.SetConversationID(ctx, taskID, conversationID)
+}
+
 func (s *Service) ListTaskArtifacts(ctx context.Context, taskID string) ([]contracts.Artifact, error) {
 	if _, err := s.store.GetTask(ctx, taskID); err != nil {
 		return nil, err
 	}
 	return s.store.ListTaskArtifacts(ctx, taskID)
+}
+
+// ReadTaskArtifact returns the verified content of a task artifact. Keeping
+// this behind Service preserves the content-addressed artifact boundary for
+// desktop consumers.
+func (s *Service) ReadTaskArtifact(ctx context.Context, taskID, kind string) ([]byte, error) {
+	items, err := s.ListTaskArtifacts(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if item.Kind == kind {
+			return s.artifactStore.Read(item)
+		}
+	}
+	return nil, contracts.NewError(contracts.ErrInvalidInput, "requested task artifact does not exist")
 }
 
 func (s *Service) CreateMemory(ctx context.Context, item contracts.MemoryRecord) (contracts.MemoryRecord, error) {

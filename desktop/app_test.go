@@ -37,7 +37,7 @@ func TestDesktopTaskUsesAgentReportAcceptance(t *testing.T) {
 	}
 }
 
-func TestSendMessageRunsSafeInitialPlanWithoutRequiringPlannerOutput(t *testing.T) {
+func TestConversationContinuesWithoutCreatingNewRoot(t *testing.T) {
 	service, err := app.Open(context.Background(), app.Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) {
 		return mock.Provider{Response: "not a plan"}, nil
 	}})
@@ -54,9 +54,17 @@ func TestSendMessageRunsSafeInitialPlanWithoutRequiringPlannerOutput(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := desktop.SendMessage(workspace.ID, "inspect the workspace", deployment.ID)
-	if err != nil || snapshot.Task.Status != contracts.TaskCompleted {
-		t.Fatal(snapshot, err)
+	conversation, err := desktop.StartConversation(workspace.ID, "inspect the workspace", deployment.ID)
+	if err != nil || conversation.Conversation.ID == "" || len(conversation.Messages) != 2 || len(conversation.Turns) != 1 || conversation.Turns[0].Snapshot.Task.Status != contracts.TaskCompleted {
+		t.Fatal(conversation, err)
+	}
+	conversation, err = desktop.SendConversationMessage(conversation.Conversation.ID, "inspect again", deployment.ID)
+	if err != nil || len(conversation.Messages) != 4 || len(conversation.Turns) != 2 {
+		t.Fatal(conversation, err)
+	}
+	roots, err := desktop.ListConversations()
+	if err != nil || len(roots) != 1 {
+		t.Fatal(roots, err)
 	}
 }
 

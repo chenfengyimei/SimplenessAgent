@@ -22,8 +22,16 @@ export function GeneratePlan(arg1, arg2) {
   return window['go']['main']['App']['GeneratePlan'](arg1, arg2);
 }
 
+export function GetConversation(arg1) {
+  return window['go']['main']['App']['GetConversation'](arg1);
+}
+
 export function GetTaskSnapshot(arg1) {
   return window['go']['main']['App']['GetTaskSnapshot'](arg1);
+}
+
+export function ListConversations() {
+  return window['go']['main']['App']['ListConversations']();
 }
 
 export function ListDeployments() {
@@ -46,6 +54,10 @@ export function RunAgent(arg1, arg2) {
   return window['go']['main']['App']['RunAgent'](arg1, arg2);
 }
 
-export function SendMessage(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SendMessage'](arg1, arg2, arg3);
+export function SendConversationMessage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendConversationMessage'](arg1, arg2, arg3);
+}
+
+export function StartConversation(arg1, arg2, arg3) {
+  return window['go']['main']['App']['StartConversation'](arg1, arg2, arg3);
 }
