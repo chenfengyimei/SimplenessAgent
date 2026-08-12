@@ -60,6 +60,31 @@ func (s *Store) SearchMemory(ctx context.Context, workspaceID, query string, lim
 	return result, rows.Err()
 }
 
+// ListPinnedMemory returns durable user-approved context that should be
+// considered even when a short natural-language query has no FTS overlap.
+func (s *Store) ListPinnedMemory(ctx context.Context, workspaceID string, limit int) ([]contracts.MemoryRecord, error) {
+	if strings.TrimSpace(workspaceID) == "" {
+		return nil, contracts.NewError(contracts.ErrInvalidInput, "workspace ID is required")
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 6
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT memory_id,version,type,workspace_id,COALESCE(task_id,''),title,content,tags_json,source_event_ids_json,source_artifact_ids_json,confidence,importance,status,valid_from,COALESCE(valid_until,''),COALESCE(supersedes_memory_id,''),created_by,content_hash,created_at FROM memory_records WHERE workspace_id=? AND status='PINNED' AND (valid_until IS NULL OR valid_until>?) ORDER BY importance DESC,created_at DESC LIMIT ?`, workspaceID, now(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []contracts.MemoryRecord{}
+	for rows.Next() {
+		item, scanErr := scanMemory(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 type memoryRow interface{ Scan(...interface{}) error }
 
 func scanMemory(row memoryRow) (contracts.MemoryRecord, error) {

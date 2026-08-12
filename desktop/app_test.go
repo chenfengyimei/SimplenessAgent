@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -131,6 +132,48 @@ func TestConversationRunsModelToolLoopAndReturnsModelReply(t *testing.T) {
 	}
 	if len(conversation.Turns) != 1 || conversation.Turns[0].Snapshot.Task.Status != contracts.TaskCompleted || conversation.Turns[0].Report.ToolName != "列出文件" {
 		t.Fatalf("expected completed model turn with tool report: %#v", conversation.Turns)
+	}
+}
+
+func TestConversationExecutionReceivesRecentTurnsAndRelevantMemory(t *testing.T) {
+	provider := &scriptedChatProvider{responses: []contracts.ChatResponse{
+		{Text: "我已收到这条初始消息。"},
+		{Text: "你之前说的是初始需求。"},
+	}}
+	service, err := app.Open(context.Background(), app.Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) { return provider, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	desktop := &App{ctx: context.Background(), service: service, apiKeys: map[string]string{}, credentials: &memoryCredentialStore{values: map[string]string{}}}
+	workspace, err := desktop.CreateWorkspace("demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.CreateMemory(context.Background(), contracts.MemoryRecord{Type: "PREFERENCE", WorkspaceID: workspace.ID, Title: "答复语言", Content: "始终使用中文回答。", SourceEventIDs: []string{"evt_user_preference"}, Confidence: 1, Importance: 1, Status: "PINNED", CreatedBy: "USER_CONFIRMED"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(context.Background(), contracts.Deployment{Name: "model", ProviderType: "openai_compatible", Location: "DESKTOP", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := desktop.StartConversation(workspace.ID, "初始需求：请记住这一点", deployment.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = desktop.SendConversationMessage(conversation.Conversation.ID, "我之前说了什么？", deployment.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected two model requests, got %d", len(provider.requests))
+	}
+	context := provider.requests[1].Messages[1].Content
+	for _, expected := range []string{"RECENT_CONVERSATION", "初始需求：请记住这一点", "我已收到这条初始消息。", "MEMORY_PREFERENCE", "始终使用中文回答。"} {
+		if !strings.Contains(context, expected) {
+			t.Fatalf("second-turn context does not include %q:\n%s", expected, context)
+		}
 	}
 }
 

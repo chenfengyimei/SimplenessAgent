@@ -349,7 +349,13 @@ func (a *App) executeConversationTurn(service *app.Service, created contracts.Ta
 	if strings.TrimSpace(deploymentID) == "" {
 		snapshot, err = service.RunTask(a.ctx, created.ID)
 	} else {
-		snapshot, err = service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: created.ID, DeploymentID: deploymentID})
+		sections, contextErr := service.ConversationContextSections(a.ctx, created.ID, conversationID, created.Goal)
+		if contextErr != nil {
+			a.logError("agent", "assemble conversation context failed", contextErr, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID})
+			return ConversationView{}, contextErr
+		}
+		a.logInfo("agent", "conversation context assembled", map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "sections": fmt.Sprint(len(sections))})
+		snapshot, err = service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: created.ID, DeploymentID: deploymentID, ContextSections: sections})
 	}
 	if err != nil {
 		a.logError("agent", "turn execution failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "deployment_id": deploymentID})
