@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,15 +14,16 @@ import (
 
 // App struct
 type App struct {
-	ctx     context.Context
-	service *app.Service
-	openErr error
-	apiKey  string
+	ctx         context.Context
+	service     *app.Service
+	openErr     error
+	apiKeys     map[string]string
+	credentials credentialStore
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{}
+	return &App{apiKeys: map[string]string{}, credentials: windowsCredentialStore{}}
 }
 
 // startup is called when the app starts. The context is saved
@@ -40,7 +42,16 @@ func (a *App) resolveProvider(deployment contracts.Deployment) (contracts.ChatPr
 	if deployment.ProviderType != "openai_compatible" {
 		return nil, contracts.NewError(contracts.ErrCapabilityUnsupported, "desktop supports only openai_compatible deployments")
 	}
-	return openai.New(openai.Config{BaseURL: deployment.Endpoint, APIKey: a.apiKey, Model: deployment.Model, DeploymentID: deployment.ID})
+	apiKey := a.apiKeys[deployment.ID]
+	if deployment.CredentialRef != "" && strings.TrimSpace(apiKey) == "" {
+		var err error
+		apiKey, err = a.credentialStore().Load(deployment.ID)
+		if err != nil {
+			return nil, contracts.NewError(contracts.ErrAuthenticationFailed, "API Key is unavailable; open 模型与设置, enter the API Key, and save the selected model")
+		}
+		a.apiKeys[deployment.ID] = apiKey
+	}
+	return openai.New(openai.Config{BaseURL: deployment.Endpoint, APIKey: apiKey, Model: deployment.Model, DeploymentID: deployment.ID})
 }
 
 func (a *App) shutdown(_ context.Context) {
@@ -114,21 +125,61 @@ func (a *App) ListDeployments() ([]contracts.Deployment, error) {
 	return service.ListDeployments(a.ctx)
 }
 
-// ConfigureOpenAICompatibleDeployment keeps the API key in this running
-// desktop process only. The persisted Deployment contains no secret.
+// ConfigureOpenAICompatibleDeployment persists only model metadata in SQLite.
+// API keys are encrypted by Windows Credential Manager and referenced from the
+// deployment, never serialized into the task database.
 func (a *App) ConfigureOpenAICompatibleDeployment(name, endpoint, model, apiKey string) (contracts.Deployment, error) {
 	service, err := a.core()
 	if err != nil {
 		return contracts.Deployment{}, err
 	}
-	if strings.TrimSpace(apiKey) != "" {
-		a.apiKey = apiKey
+	name = strings.TrimSpace(name)
+	items, err := service.ListDeployments(a.ctx)
+	if err != nil {
+		return contracts.Deployment{}, err
+	}
+	for _, item := range items {
+		if item.Name != name {
+			continue
+		}
+		if item.ProviderType != "openai_compatible" {
+			return contracts.Deployment{}, contracts.NewError(contracts.ErrInvalidInput, "an existing deployment with this name uses another provider type")
+		}
+		if strings.TrimSpace(apiKey) != "" {
+			if err := a.credentialStore().Save(item.ID, strings.TrimSpace(apiKey)); err != nil {
+				return contracts.Deployment{}, fmt.Errorf("store API Key securely: %w", err)
+			}
+			a.apiKeys[item.ID] = strings.TrimSpace(apiKey)
+			item.CredentialRef = "windows-credential-manager"
+		}
+		item.Endpoint = endpoint
+		item.Model = model
+		item.Location = "DESKTOP"
+		item.Enabled = true
+		return service.UpdateDeployment(a.ctx, item)
 	}
 	credentialRef := ""
 	if strings.TrimSpace(apiKey) != "" {
-		credentialRef = "desktop-session"
+		credentialRef = "windows-credential-manager"
 	}
-	return service.CreateDeployment(a.ctx, contracts.Deployment{Name: name, ProviderType: "openai_compatible", Location: "DESKTOP", Endpoint: endpoint, Model: model, CredentialRef: credentialRef, Enabled: true})
+	created, err := service.CreateDeployment(a.ctx, contracts.Deployment{Name: name, ProviderType: "openai_compatible", Location: "DESKTOP", Endpoint: endpoint, Model: model, CredentialRef: credentialRef, Enabled: true})
+	if err != nil {
+		return contracts.Deployment{}, err
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		if err := a.credentialStore().Save(created.ID, strings.TrimSpace(apiKey)); err != nil {
+			return contracts.Deployment{}, fmt.Errorf("store API Key securely: %w", err)
+		}
+		a.apiKeys[created.ID] = strings.TrimSpace(apiKey)
+	}
+	return created, nil
+}
+
+func (a *App) credentialStore() credentialStore {
+	if a.credentials == nil {
+		a.credentials = windowsCredentialStore{}
+	}
+	return a.credentials
 }
 
 func (a *App) ProbeDeployment(deploymentID string) (contracts.CapabilitySnapshot, error) {
@@ -136,7 +187,13 @@ func (a *App) ProbeDeployment(deploymentID string) (contracts.CapabilitySnapshot
 	if err != nil {
 		return contracts.CapabilitySnapshot{}, err
 	}
-	_, snapshot, err := service.ProbeDeployment(a.ctx, deploymentID)
+	health, snapshot, err := service.ProbeDeployment(a.ctx, deploymentID)
+	if err != nil {
+		return contracts.CapabilitySnapshot{}, err
+	}
+	if !health.Healthy {
+		return contracts.CapabilitySnapshot{}, fmt.Errorf("model health check failed: %s", health.Message)
+	}
 	return snapshot, err
 }
 

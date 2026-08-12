@@ -163,8 +163,8 @@ func (s *Service) LoadSkill(ctx context.Context, workspaceID, name string) (cont
 }
 
 func (s *Service) CreateDeployment(ctx context.Context, item contracts.Deployment) (contracts.Deployment, error) {
-	if strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.ProviderType) == "" || strings.TrimSpace(item.Endpoint) == "" || strings.TrimSpace(item.Model) == "" {
-		return contracts.Deployment{}, contracts.NewError(contracts.ErrInvalidInput, "deployment name, provider type, endpoint and model are required")
+	if err := validateDeployment(item); err != nil {
+		return contracts.Deployment{}, err
 	}
 	now := time.Now().UTC()
 	item.ID = task.NewID("dep")
@@ -175,6 +175,34 @@ func (s *Service) CreateDeployment(ctx context.Context, item contracts.Deploymen
 		return contracts.Deployment{}, err
 	}
 	return item, nil
+}
+
+func (s *Service) UpdateDeployment(ctx context.Context, item contracts.Deployment) (contracts.Deployment, error) {
+	if strings.TrimSpace(item.ID) == "" {
+		return contracts.Deployment{}, contracts.NewError(contracts.ErrInvalidInput, "deployment ID is required")
+	}
+	if err := validateDeployment(item); err != nil {
+		return contracts.Deployment{}, err
+	}
+	current, err := s.store.GetDeployment(ctx, item.ID)
+	if err != nil {
+		return contracts.Deployment{}, err
+	}
+	item.Version = current.Version
+	item.CreatedAt = current.CreatedAt
+	item.UpdatedAt = time.Now().UTC()
+	item.CapabilitySnapshotID = current.CapabilitySnapshotID
+	if err := s.store.UpdateDeployment(ctx, item); err != nil {
+		return contracts.Deployment{}, err
+	}
+	return item, nil
+}
+
+func validateDeployment(item contracts.Deployment) error {
+	if strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.ProviderType) == "" || strings.TrimSpace(item.Endpoint) == "" || strings.TrimSpace(item.Model) == "" {
+		return contracts.NewError(contracts.ErrInvalidInput, "deployment name, provider type, endpoint and model are required")
+	}
+	return nil
 }
 func (s *Service) ListDeployments(ctx context.Context) ([]contracts.Deployment, error) {
 	return s.store.ListDeployments(ctx)
@@ -192,6 +220,9 @@ func (s *Service) ProbeDeployment(ctx context.Context, deploymentID string) (con
 		return contracts.HealthStatus{}, contracts.CapabilitySnapshot{}, err
 	}
 	health := provider.HealthCheck(ctx)
+	if !health.Healthy {
+		return health, contracts.CapabilitySnapshot{}, contracts.NewError(contracts.ErrEndpointUnreachable, health.Message)
+	}
 	snapshot := provider.ProbeCapabilities(ctx)
 	snapshot.ID = task.NewID("cap")
 	snapshot.DeploymentID = deployment.ID

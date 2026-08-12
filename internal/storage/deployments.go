@@ -14,6 +14,21 @@ func (s *Store) CreateDeployment(ctx context.Context, item contracts.Deployment)
 	return err
 }
 
+func (s *Store) UpdateDeployment(ctx context.Context, item contracts.Deployment) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE deployments SET version=?,name=?,provider_type=?,location=?,endpoint=?,credential_ref=?,model=?,runtime=?,runtime_version=?,quantization=?,model_profile_id=?,capability_snapshot_id=?,enabled=?,updated_at=? WHERE deployment_id=?`, item.Version, item.Name, item.ProviderType, item.Location, item.Endpoint, nullIfEmpty(item.CredentialRef), item.Model, nullIfEmpty(item.Runtime), nullIfEmpty(item.RuntimeVersion), nullIfEmpty(item.Quantization), nullIfEmpty(item.ModelProfileID), nullIfEmpty(item.CapabilitySnapshotID), boolToInt(item.Enabled), timestamp(item.UpdatedAt), item.ID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return contracts.NewError(contracts.ErrNotFound, "deployment not found")
+	}
+	return nil
+}
+
 func (s *Store) GetDeployment(ctx context.Context, id string) (contracts.Deployment, error) {
 	var item contracts.Deployment
 	var credential, runtime, runtimeVersion, quantization, profile, capability sql.NullString
