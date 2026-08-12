@@ -47,11 +47,12 @@ go run ./cmd/simpleness -- --data-dir .\data task agents <task-id>
 ## 当前已实现
 
 - 版本化领域契约与 SQLite/WAL 迁移。
-- `desktop/` Wails + Vue TypeScript 只读任务工作台：读取同一 App Service 的本地任务快照，不持有独立业务状态。
+- `desktop/` Wails + Vue TypeScript 白色会话工作台：按授权工作目录收纳会话，在会话内展示中文执行记录、审批卡片和本地运行诊断；不持有独立业务状态。
 - Task/Step 状态机、追加事件、DAG 计划校验和 Checkpoint。
 - 授权工作区边界与只读文件工具。
 - 内容寻址 Artifact、Evidence 和恢复读取。
 - Mock Provider 边界及 CLI 端到端侦察闭环。
+- 会话级权限模式：计划模式只读；编辑模式以参数绑定审批执行文件修改和受限项目命令；开发模式可在授权工作区内直接使用受审计、无 Shell 的受限写入/命令面。
 
 详细边界、验证结果与后续计划见 [Docs/11-基础框架实现状态.md](Docs/11-基础框架实现状态.md)。
 
@@ -71,10 +72,10 @@ The initial framework is implemented and tested as a P0/P1 vertical slice:
 - Deterministic `FILE_EXISTS`, `DIFF_CONTAINS`, evidence and bounded command acceptance checks. Command checks use a closed `go_test`/`go_vet` runner allowlist, never a shell.
 - A Mock Provider boundary and a CLI that drives the same Core an eventual Wails client will use.
 - An OpenAI-compatible `/v1` Provider adapter with normalized chat/tool calls, SSE streaming, cancellation and active capability probing. The CLI resolves configured OpenAI-compatible deployments at runtime without persisting API keys.
-- A bounded Agent Worker with a fixed executor contract, allowlist/risk/Schema checks, repeated-action blocking and token/duration budgets. It can inspect a workspace, examine Git state, run fixed `go test`/`go vet` checks, and submit exact single-file or up-to-16-file workspace-change proposals. Proposals never write directly: the App Service persists an `AGENT_REPORT`, a reviewable change batch, and only performs atomic writes after a parameter-bound user approval.
+- A bounded Agent Worker with a fixed executor contract, allowlist/risk/Schema checks, repeated-action blocking and token/duration budgets. Conversation-level modes keep the authority explicit: PLAN exposes inspection only; EDIT produces exact write/command proposals that stop for parameter-bound approval; DEVELOPMENT enables the same workspace-bounded direct write/project-command surface with write-ahead audit records. The command runner has no shell and currently permits only fixed `go test`, `go vet`, `npm test`, and `npm run build` forms.
 - Integration, recovery, state-machine, plan and path-boundary tests.
 
-The deterministic reconnaissance runner remains available as a safe baseline. Model-driven planning and bounded execution are available through an explicit Deployment; every mutation remains behind approval, write-ahead intent and recovery boundaries.
+The deterministic reconnaissance runner remains available as a safe baseline. Model-driven planning and bounded execution are available through an explicit Deployment; EDIT mutations remain behind approval, while DEVELOPMENT direct operations retain write-ahead intent and recovery boundaries.
 
 ## Desktop workbench
 

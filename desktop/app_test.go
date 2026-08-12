@@ -95,11 +95,11 @@ func TestConversationContinuesWithoutCreatingNewRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, err := desktop.StartConversation(workspace.ID, "inspect the workspace", deployment.ID)
+	conversation, err := desktop.StartConversation(workspace.ID, "inspect the workspace", deployment.ID, "EDIT")
 	if err != nil || conversation.Conversation.ID == "" || len(conversation.Messages) != 2 || len(conversation.Turns) != 1 || conversation.Turns[0].Snapshot.Task.Status != contracts.TaskCompleted {
 		t.Fatal(conversation, err)
 	}
-	conversation, err = desktop.SendConversationMessage(conversation.Conversation.ID, "inspect again", deployment.ID)
+	conversation, err = desktop.SendConversationMessage(conversation.Conversation.ID, "inspect again", deployment.ID, "EDIT")
 	if err != nil || len(conversation.Messages) != 4 || len(conversation.Turns) != 2 {
 		t.Fatal(conversation, err)
 	}
@@ -128,7 +128,7 @@ func TestConversationRunsModelToolLoopAndReturnsModelReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, err := desktop.StartConversation(workspace.ID, "请查看工作目录并告诉我有什么", deployment.ID)
+	conversation, err := desktop.StartConversation(workspace.ID, "请查看工作目录并告诉我有什么", deployment.ID, "EDIT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestConversationShowsApprovalGatedWriteProposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, err := desktop.StartConversation(workspace.ID, "把 note 改成 after", deployment.ID)
+	conversation, err := desktop.StartConversation(workspace.ID, "把 note 改成 after", deployment.ID, "EDIT")
 	if err != nil || len(conversation.Turns) != 1 {
 		t.Fatal(conversation, err)
 	}
@@ -208,11 +208,11 @@ func TestConversationExecutionReceivesRecentTurnsAndRelevantMemory(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, err := desktop.StartConversation(workspace.ID, "初始需求：请记住这一点", deployment.ID)
+	conversation, err := desktop.StartConversation(workspace.ID, "初始需求：请记住这一点", deployment.ID, "EDIT")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = desktop.SendConversationMessage(conversation.Conversation.ID, "我之前说了什么？", deployment.ID)
+	_, err = desktop.SendConversationMessage(conversation.Conversation.ID, "我之前说了什么？", deployment.ID, "EDIT")
 	if err != nil {
 		t.Fatal(err)
 	}

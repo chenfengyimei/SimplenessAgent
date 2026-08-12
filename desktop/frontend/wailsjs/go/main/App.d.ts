@@ -5,6 +5,8 @@ import {contracts} from '../models';
 import {app} from '../models';
 import {diagnostics} from '../models';
 
+export function ApproveConversationCommand(arg1:string,arg2:string):Promise<main.ConversationView>;
+
 export function ApproveConversationWrite(arg1:string,arg2:string):Promise<main.ConversationView>;
 
 export function ConfigureOpenAICompatibleDeployment(arg1:string,arg2:string,arg3:string,arg4:string):Promise<contracts.Deployment>;
@@ -37,6 +39,6 @@ export function RecordClientLog(arg1:string,arg2:string,arg3:Record<string, stri
 
 export function RunAgent(arg1:string,arg2:string):Promise<app.TaskSnapshot>;
 
-export function SendConversationMessage(arg1:string,arg2:string,arg3:string):Promise<main.ConversationView>;
+export function SendConversationMessage(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ConversationView>;
 
-export function StartConversation(arg1:string,arg2:string,arg3:string):Promise<main.ConversationView>;
+export function StartConversation(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ConversationView>;

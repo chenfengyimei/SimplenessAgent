@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/xm/simplenessagent/internal/task"
 	"github.com/xm/simplenessagent/internal/workspace"
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
@@ -19,7 +18,23 @@ func RegisterApprovedWriteFile(registry *Registry, root string, approve func(map
 	if approve == nil {
 		return contracts.NewError(contracts.ErrInvalidInput, "write approval callback is required")
 	}
-	definition := contracts.ToolDefinition{Version: contracts.SchemaVersion, Name: "write_file", ToolVersion: "1.0.0", Description: "Write a UTF-8 file after parameter-bound approval.", ParametersSchema: objectSchema(map[string]interface{}{"path": stringSchema(), "content": stringSchema(), "expected_content_hash": stringSchema()}, []string{"path", "content", "expected_content_hash"}), RiskClass: contracts.RiskWrite, RequiredCapabilities: []string{"fs.write"}, SupportsCancel: false}
+	return registerWriteFile(registry, root, func(args map[string]interface{}) (string, error) {
+		return "", approve(args)
+	})
+}
+
+// RegisterDevelopmentWriteFile registers the direct, workspace-scoped write
+// tool used only for DEVELOPMENT tasks. beforeWrite must durably record the
+// intent before the atomic replacement begins and returns the audit record ID.
+func RegisterDevelopmentWriteFile(registry *Registry, root string, beforeWrite func(map[string]interface{}) (string, error)) error {
+	if beforeWrite == nil {
+		return contracts.NewError(contracts.ErrInvalidInput, "development write callback is required")
+	}
+	return registerWriteFile(registry, root, beforeWrite)
+}
+
+func registerWriteFile(registry *Registry, root string, beforeWrite func(map[string]interface{}) (string, error)) error {
+	definition := contracts.ToolDefinition{Version: contracts.SchemaVersion, Name: "write_file", ToolVersion: "1.0.0", Description: "Write a UTF-8 workspace file through the active permission boundary. The operation is checked against the current file hash and recorded before the atomic replacement.", ParametersSchema: objectSchema(map[string]interface{}{"path": stringSchema(), "content": stringSchema(), "expected_content_hash": stringSchema()}, []string{"path", "content", "expected_content_hash"}), RiskClass: contracts.RiskWrite, RequiredCapabilities: []string{"fs.write"}, SupportsCancel: false}
 	return registry.Register(definition, func(ctx context.Context, args map[string]interface{}) (contracts.ToolResult, error) {
 		started := time.Now().UTC()
 		path, content, expected, err := writeArguments(args)
@@ -40,18 +55,21 @@ func RegisterApprovedWriteFile(registry *Registry, root string, approve func(map
 		if err = ctx.Err(); err != nil {
 			return failed(started, err), nil
 		}
-		if err = approve(args); err != nil {
+		toolCallID, err := beforeWrite(args)
+		if err != nil {
 			return failed(started, err), nil
 		}
 		alreadyApplied, err = writeChecked(target, []byte(content), expected)
 		if err != nil {
-			return failed(started, err), nil
+			result := failed(started, err)
+			result.ToolCallID = toolCallID
+			return result, nil
 		}
 		summary := "file written"
 		if alreadyApplied {
 			summary = "file already contains requested content"
 		}
-		return contracts.ToolResult{Version: contracts.SchemaVersion, ToolCallID: task.NewID("tcall"), Status: "SUCCEEDED", Summary: summary, Data: map[string]interface{}{"path": path, "content_hash": hash([]byte(content)), "recovered": alreadyApplied}, StartedAt: started, CompletedAt: time.Now().UTC()}, nil
+		return contracts.ToolResult{Version: contracts.SchemaVersion, ToolCallID: toolCallID, Status: "SUCCEEDED", Summary: summary, Data: map[string]interface{}{"path": path, "content_hash": hash([]byte(content)), "recovered": alreadyApplied}, StartedAt: started, CompletedAt: time.Now().UTC()}, nil
 	})
 }
 

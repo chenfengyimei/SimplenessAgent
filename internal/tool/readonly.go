@@ -18,7 +18,10 @@ import (
 
 const defaultMaxOutputBytes = 32 * 1024
 
-func RegisterReadOnly(registry *Registry, root string) error {
+// RegisterWorkspaceReadTools exposes only filesystem inspection tools. Plan
+// mode uses this narrow surface, so it cannot turn a planning request into a
+// process execution request.
+func RegisterWorkspaceReadTools(registry *Registry, root string) error {
 	definitions := []struct {
 		definition contracts.ToolDefinition
 		handler    Handler
@@ -32,6 +35,15 @@ func RegisterReadOnly(registry *Registry, root string) error {
 		if err := registry.Register(item.definition, item.handler); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// RegisterReadOnly is the broader inspection surface for edit and development
+// modes. Commands remain fixed, non-shell tools.
+func RegisterReadOnly(registry *Registry, root string) error {
+	if err := RegisterWorkspaceReadTools(registry, root); err != nil {
+		return err
 	}
 	return RegisterReadOnlyCommands(registry, root)
 }

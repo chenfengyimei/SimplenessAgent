@@ -13,9 +13,10 @@ interface Window { go: { main: { App: {
   RunAgent(taskID: string, deploymentID: string): Promise<unknown>
   ListConversations(): Promise<unknown[]>
   GetConversation(conversationID: string): Promise<unknown>
-  StartConversation(workspaceID: string, message: string, deploymentID: string): Promise<unknown>
-  SendConversationMessage(conversationID: string, message: string, deploymentID: string): Promise<unknown>
+  StartConversation(workspaceID: string, message: string, deploymentID: string, permissionMode?: string): Promise<unknown>
+  SendConversationMessage(conversationID: string, message: string, deploymentID: string, permissionMode?: string): Promise<unknown>
   ApproveConversationWrite(taskID: string, stepID: string): Promise<unknown>
+  ApproveConversationCommand(taskID: string, stepID: string): Promise<unknown>
   ListDiagnosticLogs(limit: number): Promise<unknown[]>
   RecordClientLog(level: string, message: string, fields: Record<string, string>): Promise<void>
 } } } }

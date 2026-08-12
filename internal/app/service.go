@@ -380,10 +380,7 @@ func (s *Service) GeneratePlan(ctx context.Context, taskID, deploymentID string)
 		return contracts.PlanVersion{}, err
 	}
 	registry := tool.NewRegistry()
-	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
-		return contracts.PlanVersion{}, err
-	}
-	if err = tool.RegisterWriteProposalTools(registry, workspaceItem.RootPath, func(tool.ProposalRequest) error { return nil }); err != nil {
+	if err = s.registerPlannerTools(registry, workspaceItem.RootPath, item); err != nil {
 		return contracts.PlanVersion{}, err
 	}
 	previous, err := s.store.GetLatestPlan(ctx, item.ID)
@@ -396,6 +393,9 @@ func (s *Service) GeneratePlan(ctx context.Context, taskID, deploymentID string)
 	}
 	candidate, err := plannerService.Create(ctx, planner.Input{DeploymentID: deployment.ID, Task: item, AvailableTools: registry.Definitions(), Revision: previous.Revision + 1, ParentPlanID: previous.PlanID})
 	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	if err = validatePlanPermission(candidate, item); err != nil {
 		return contracts.PlanVersion{}, err
 	}
 	event, err := s.newEvent(ctx, item.ID, "PLAN_CREATED", map[string]interface{}{"plan_id": candidate.PlanID, "revision": candidate.Revision, "parent_plan_id": candidate.ParentPlanID, "source": "MODEL"})
@@ -452,10 +452,7 @@ func (s *Service) ReplanTask(ctx context.Context, taskID, deploymentID, reason s
 		return contracts.PlanVersion{}, err
 	}
 	registry := tool.NewRegistry()
-	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
-		return contracts.PlanVersion{}, err
-	}
-	if err = tool.RegisterWriteProposalTools(registry, workspaceItem.RootPath, func(tool.ProposalRequest) error { return nil }); err != nil {
+	if err = s.registerPlannerTools(registry, workspaceItem.RootPath, item); err != nil {
 		return contracts.PlanVersion{}, err
 	}
 	plannerService, err := planner.New(provider)
@@ -464,6 +461,9 @@ func (s *Service) ReplanTask(ctx context.Context, taskID, deploymentID, reason s
 	}
 	candidate, err := plannerService.Create(ctx, planner.Input{DeploymentID: deployment.ID, Task: item, AvailableTools: registry.Definitions(), Revision: previous.Revision + 1, ParentPlanID: previous.PlanID, ReplanContext: &planner.ReplanContext{Reason: reason, PreviousPlan: previous, PreviousSteps: states}})
 	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	if err = validatePlanPermission(candidate, item); err != nil {
 		return contracts.PlanVersion{}, err
 	}
 	event, err := s.newEvent(ctx, item.ID, "PLAN_REPLANNED", map[string]interface{}{"plan_id": candidate.PlanID, "revision": candidate.Revision, "parent_plan_id": candidate.ParentPlanID, "reason": reason})
@@ -479,6 +479,52 @@ func (s *Service) ReplanTask(ctx context.Context, taskID, deploymentID, reason s
 	return candidate, nil
 }
 
+func (s *Service) registerPlannerTools(registry *tool.Registry, root string, item contracts.Task) error {
+	mode, err := taskPermissionMode(item)
+	if err != nil {
+		return err
+	}
+	switch mode {
+	case contracts.PermissionModePlan:
+		return tool.RegisterWorkspaceReadTools(registry, root)
+	case contracts.PermissionModeEdit:
+		if err = tool.RegisterReadOnly(registry, root); err != nil {
+			return err
+		}
+		if err = tool.RegisterWriteProposalTools(registry, root, func(tool.ProposalRequest) error { return nil }); err != nil {
+			return err
+		}
+		return tool.RegisterCommandProposalTool(registry, func(tool.CommandProposal) error { return nil })
+	case contracts.PermissionModeDevelopment:
+		if err = tool.RegisterReadOnly(registry, root); err != nil {
+			return err
+		}
+		if err = tool.RegisterDevelopmentWriteFile(registry, root, func(map[string]interface{}) (string, error) { return "planner-preview", nil }); err != nil {
+			return err
+		}
+		return tool.RegisterDevelopmentCommandTool(registry, root, func(map[string]interface{}) (string, error) { return "planner-preview", nil })
+	default:
+		return contracts.NewError(contracts.ErrPermissionDenied, "unknown task permission mode")
+	}
+}
+
+// validatePlanPermission makes the task's persisted authority an invariant of
+// every model-generated plan revision. Tool definitions are checked by the
+// planner; this second check prevents an over-broad RiskClass on a step from
+// bypassing the mode chosen for the conversation.
+func validatePlanPermission(plan contracts.PlanVersion, item contracts.Task) error {
+	mode, err := taskPermissionMode(item)
+	if err != nil {
+		return err
+	}
+	for _, step := range plan.Steps {
+		if !mode.AllowsRisk(step.Risk) {
+			return contracts.NewError(contracts.ErrPermissionDenied, "plan step risk is not allowed by the conversation permission mode")
+		}
+	}
+	return nil
+}
+
 type CreateTaskInput struct {
 	WorkspaceID, Title, Goal string
 	Constraints              []contracts.Constraint
@@ -486,6 +532,7 @@ type CreateTaskInput struct {
 	Budget                   contracts.TaskBudget
 	AllowSubagents           bool
 	AllowWriteProposals      bool
+	PermissionMode           contracts.PermissionMode
 }
 
 // WriteFileInput is the complete, parameter-bound request for a file write.
@@ -512,6 +559,17 @@ type PendingWriteBatch struct {
 	TaskID string         `json:"task_id"`
 	StepID string         `json:"step_id"`
 	Writes []PendingWrite `json:"writes"`
+}
+
+// PendingCommand is the exact project command proposed in EDIT mode. It is
+// persisted as an artifact and can only be executed through a matching,
+// single-use approval ticket.
+type PendingCommand struct {
+	TaskID    string   `json:"task_id"`
+	StepID    string   `json:"step_id"`
+	Command   string   `json:"command"`
+	Arguments []string `json:"arguments"`
+	TimeoutMS int      `json:"timeout_ms"`
 }
 
 // ApproveWriteFile creates a single-use approval ticket for exactly one file
@@ -598,6 +656,18 @@ func (s *Service) persistPendingWrite(ctx context.Context, item contracts.Task, 
 		return err
 	}
 	return nil
+}
+
+func (s *Service) persistPendingCommand(ctx context.Context, item contracts.Task, stepID string, pending PendingCommand) error {
+	encoded, err := json.Marshal(pending)
+	if err != nil {
+		return err
+	}
+	artifactItem, err := s.artifactStore.Put("PENDING_COMMAND", "application/json", "model-proposed project command awaiting approval", item.ID, stepID, encoded)
+	if err != nil {
+		return err
+	}
+	return s.store.SaveArtifact(ctx, artifactItem)
 }
 
 // ApprovePendingWrite binds a user decision to the persisted proposal, writes
@@ -772,12 +842,232 @@ func (s *Service) PendingWrite(ctx context.Context, taskID string) (PendingWrite
 	return PendingWriteBatch{}, contracts.NewError(contracts.ErrNotFound, "pending write proposal is unavailable")
 }
 
+// PendingCommand returns the current reviewable project-command request for an
+// EDIT-mode task waiting on the user. It never exposes a generic shell string.
+func (s *Service) PendingCommand(ctx context.Context, taskID string) (PendingCommand, error) {
+	item, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return PendingCommand{}, err
+	}
+	if item.Status != contracts.TaskWaitingApproval {
+		return PendingCommand{}, contracts.NewError(contracts.ErrInvalidTransition, "task is not waiting for a command approval")
+	}
+	planVersion, err := s.store.GetLatestPlan(ctx, taskID)
+	if err != nil {
+		return PendingCommand{}, err
+	}
+	states, err := s.store.GetSteps(ctx, planVersion.PlanID)
+	if err != nil {
+		return PendingCommand{}, err
+	}
+	for _, state := range states {
+		if state.Status == contracts.StepWaitingApproval {
+			return s.readPendingCommand(ctx, taskID, state.StepID)
+		}
+	}
+	return PendingCommand{}, contracts.NewError(contracts.ErrNotFound, "pending command proposal is unavailable")
+}
+
+func (s *Service) readPendingCommand(ctx context.Context, taskID, stepID string) (PendingCommand, error) {
+	items, err := s.ListTaskArtifacts(ctx, taskID)
+	if err != nil {
+		return PendingCommand{}, err
+	}
+	for index := len(items) - 1; index >= 0; index-- {
+		item := items[index]
+		if item.Kind != "PENDING_COMMAND" || item.StepID != stepID {
+			continue
+		}
+		contents, readErr := s.artifactStore.Read(item)
+		if readErr != nil {
+			return PendingCommand{}, readErr
+		}
+		var pending PendingCommand
+		if err = json.Unmarshal(contents, &pending); err != nil {
+			return PendingCommand{}, err
+		}
+		if pending.TaskID != taskID || pending.StepID != stepID {
+			return PendingCommand{}, contracts.NewError(contracts.ErrInvalidInput, "pending command artifact is malformed")
+		}
+		if _, err = tool.ParseProjectCommand(commandArguments(pending)); err != nil {
+			return PendingCommand{}, contracts.NewError(contracts.ErrInvalidInput, "pending command artifact is malformed")
+		}
+		return pending, nil
+	}
+	return PendingCommand{}, contracts.NewError(contracts.ErrNotFound, "pending command proposal is unavailable")
+}
+
+func commandArguments(pending PendingCommand) map[string]interface{} {
+	arguments := make([]interface{}, 0, len(pending.Arguments))
+	for _, argument := range pending.Arguments {
+		arguments = append(arguments, argument)
+	}
+	return map[string]interface{}{"command": pending.Command, "arguments": arguments, "timeout_ms": float64(pending.TimeoutMS)}
+}
+
+// ApprovePendingCommand consumes a parameter-bound ticket and runs exactly one
+// allowlisted command. Unlike development mode, EDIT mode can never execute a
+// command until this explicit approval is supplied.
+func (s *Service) ApprovePendingCommand(ctx context.Context, taskID, stepID string, expiresAt time.Time) (TaskSnapshot, error) {
+	item, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if item.Status != contracts.TaskWaitingApproval {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "task is not waiting for a project-command approval")
+	}
+	pending, err := s.readPendingCommand(ctx, taskID, stepID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	planVersion, err := s.store.GetLatestPlan(ctx, taskID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	step, found := findStep(planVersion, stepID)
+	if !found || !contains(step.AllowedTools, "propose_project_command") {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrToolNotAllowed, "command approval is not bound to this step")
+	}
+	states, err := s.store.GetSteps(ctx, planVersion.PlanID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if !stepHasStatus(states, stepID, contracts.StepWaitingApproval) {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrInvalidTransition, "step is not waiting for command approval")
+	}
+	workspaceItem, err := s.store.GetWorkspace(ctx, item.WorkspaceID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	arguments := commandArguments(pending)
+	intent, err := policy.NewIntent("run_project_command", arguments, contracts.RiskDangerous, item.ID+"\x00"+stepID)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	ticket := contracts.ApprovalTicket{ID: task.NewID("apr"), TaskID: taskID, StepID: stepID, ToolName: intent.ToolName, ArgumentsHash: intent.ArgumentsHash, Decision: "APPROVED", ExpiresAt: expiresAt, UsesRemaining: 1, CreatedAt: time.Now().UTC()}
+	event, err := s.newEvent(ctx, taskID, "TOOL_APPROVED", map[string]interface{}{"approval_id": ticket.ID, "step_id": stepID, "tool_name": ticket.ToolName, "arguments_hash": ticket.ArgumentsHash, "expires_at": ticket.ExpiresAt})
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.store.CreateApprovalWithEvent(ctx, ticket, event); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionTask(ctx, taskID, contracts.TaskWaitingApproval, contracts.TaskRunning, "TASK_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	if err = s.transitionStep(ctx, taskID, stepID, contracts.StepWaitingApproval, contracts.StepRunning, "STEP_STATUS_CHANGED"); err != nil {
+		return TaskSnapshot{}, err
+	}
+	result, runErr := s.executeProjectCommand(ctx, item, step, workspaceItem, arguments, true)
+	if runErr != nil || result.Status != "SUCCEEDED" {
+		_ = s.transitionStep(ctx, taskID, stepID, contracts.StepRunning, contracts.StepFailed, "STEP_STATUS_CHANGED")
+		_ = s.transitionTask(ctx, taskID, contracts.TaskRunning, contracts.TaskFailed, "TASK_STATUS_CHANGED")
+		if runErr != nil {
+			return TaskSnapshot{}, runErr
+		}
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrSideEffectUnknown, result.Summary)
+	}
+	if err = s.persistCommandResult(ctx, item, stepID, result); err != nil {
+		return TaskSnapshot{}, err
+	}
+	return s.completeModelStep(ctx, item, planVersion, stepID)
+}
+
+func stepHasStatus(states []contracts.StepRuntime, stepID string, wanted contracts.StepStatus) bool {
+	for _, state := range states {
+		if state.StepID == stepID && state.Status == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func writeIntent(taskID string, input WriteFileInput) (policy.Intent, error) {
 	return policy.NewIntent("write_file", writeArguments(input), contracts.RiskWrite, taskID+"\x00"+input.StepID)
 }
 
 func writeArguments(input WriteFileInput) map[string]interface{} {
 	return map[string]interface{}{"path": input.Path, "content": input.Content, "expected_content_hash": input.ExpectedContentHash}
+}
+
+func stringArgument(arguments map[string]interface{}, name string) string {
+	value, _ := arguments[name].(string)
+	return value
+}
+
+// recordToolIntent is shared by development-mode workspace writes and project
+// commands. It keeps the durable intent/event before the first side effect and
+// lets the Worker result update that exact record after execution.
+func (s *Service) recordToolIntent(ctx context.Context, item contracts.Task, step contracts.StepSpec, toolName string, arguments map[string]interface{}, risk contracts.RiskClass) (string, error) {
+	intent, err := policy.NewIntent(toolName, arguments, risk, item.ID+"\x00"+step.StepID)
+	if err != nil {
+		return "", err
+	}
+	event, err := s.newEvent(ctx, item.ID, "TOOL_INTENT_RECORDED", map[string]interface{}{"step_id": step.StepID, "tool_name": intent.ToolName, "arguments_hash": intent.ArgumentsHash, "idempotency_key": intent.IdempotencyKey})
+	if err != nil {
+		return "", err
+	}
+	record, err := s.store.RecordToolIntentWithEvent(ctx, contracts.ToolCallRecord{ID: task.NewID("tcall"), Version: contracts.SchemaVersion, StepID: step.StepID, ToolName: intent.ToolName, ArgumentsHash: intent.ArgumentsHash, IdempotencyKey: intent.IdempotencyKey, Risk: intent.Risk, Status: "INTENT_RECORDED", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, event)
+	if err != nil {
+		return "", err
+	}
+	return record.ID, nil
+}
+
+func (s *Service) executeProjectCommand(ctx context.Context, item contracts.Task, step contracts.StepSpec, workspaceItem contracts.Workspace, arguments map[string]interface{}, requireApproval bool) (contracts.ToolResult, error) {
+	intent, err := policy.NewIntent("run_project_command", arguments, contracts.RiskDangerous, item.ID+"\x00"+step.StepID)
+	if err != nil {
+		return contracts.ToolResult{}, err
+	}
+	recordID, err := s.recordToolIntent(ctx, item, step, intent.ToolName, arguments, contracts.RiskDangerous)
+	if err != nil {
+		return contracts.ToolResult{}, err
+	}
+	registry := tool.NewRegistry()
+	if requireApproval {
+		err = tool.RegisterApprovedProjectCommand(registry, workspaceItem.RootPath, func(map[string]interface{}) (string, error) {
+			if consumeErr := s.store.ConsumeApproval(ctx, item.ID, step.StepID, intent.ToolName, intent.ArgumentsHash); consumeErr != nil {
+				return "", consumeErr
+			}
+			return recordID, nil
+		})
+	} else {
+		err = tool.RegisterDevelopmentCommandTool(registry, workspaceItem.RootPath, func(map[string]interface{}) (string, error) {
+			return recordID, nil
+		})
+	}
+	if err != nil {
+		return contracts.ToolResult{}, err
+	}
+	result, invokeErr := tool.Invoke(registry, "run_project_command")(ctx, arguments)
+	if invokeErr != nil {
+		return contracts.ToolResult{}, invokeErr
+	}
+	if result.ToolCallID != "" {
+		if err = s.store.UpdateToolIntentStatus(ctx, result.ToolCallID, result.Status); err != nil {
+			return contracts.ToolResult{}, err
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) persistCommandResult(ctx context.Context, item contracts.Task, stepID string, result contracts.ToolResult) error {
+	encoded, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	artifactItem, err := s.artifactStore.Put("COMMAND_RESULT", "application/json", "bounded project command result", item.ID, stepID, encoded)
+	if err != nil {
+		return err
+	}
+	if err = s.store.SaveArtifact(ctx, artifactItem); err != nil {
+		return err
+	}
+	evidence := contracts.Evidence{ID: task.NewID("evd"), Kind: "COMMAND_RESULT", Claim: "approved project command completed", ArtifactID: artifactItem.ID, Location: "$.status", VerificationMethod: "BOUNDED_PROJECT_COMMAND", VerifiedAt: time.Now().UTC(), Confidence: 1}
+	if err = s.store.SaveEvidence(ctx, evidence); err != nil {
+		return err
+	}
+	return s.store.AttachStepResults(ctx, stepID, []string{artifactItem.ID}, []string{evidence.ID})
 }
 
 func validateWriteInput(input WriteFileInput) error {
@@ -879,8 +1169,12 @@ func (s *Service) CreateTask(ctx context.Context, input CreateTaskInput) (contra
 	if input.Budget.MaxReplans == 0 {
 		input.Budget.MaxReplans = 2
 	}
+	permissionMode, err := normalizedPermissionMode(input.PermissionMode)
+	if err != nil {
+		return contracts.Task{}, contracts.PlanVersion{}, err
+	}
 	now := time.Now().UTC()
-	spec := contracts.TaskSpec{Version: contracts.SchemaVersion, TaskID: task.NewID("tsk"), WorkspaceID: input.WorkspaceID, Title: input.Title, Goal: input.Goal, Constraints: input.Constraints, AcceptanceCriteria: input.AcceptanceCriteria, Budget: input.Budget, AllowSubagents: input.AllowSubagents, CreatedAt: now}
+	spec := contracts.TaskSpec{Version: contracts.SchemaVersion, TaskID: task.NewID("tsk"), WorkspaceID: input.WorkspaceID, Title: input.Title, Goal: input.Goal, Constraints: input.Constraints, AcceptanceCriteria: input.AcceptanceCriteria, PermissionProfileID: string(permissionMode), Budget: input.Budget, AllowSubagents: input.AllowSubagents, CreatedAt: now}
 	item := contracts.Task{ID: spec.TaskID, Version: contracts.SchemaVersion, WorkspaceID: spec.WorkspaceID, Title: spec.Title, Goal: spec.Goal, Status: contracts.TaskDraft, Spec: spec, CreatedAt: now, UpdatedAt: now}
 	event, err := s.newEvent(ctx, item.ID, "TASK_CREATED", map[string]interface{}{"title": item.Title})
 	if err != nil {
@@ -914,12 +1208,46 @@ func (s *Service) CreateTask(ctx context.Context, input CreateTaskInput) (contra
 
 func minimalPlan(item contracts.Task, allowWriteProposals bool) contracts.PlanVersion {
 	if acceptsEvidenceKind(item.Spec.AcceptanceCriteria, "AGENT_REPORT") {
-		if !allowWriteProposals {
-			return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: "在受控只读工具边界内理解用户请求、收集证据并给出可复核回复", CreatedByAgent: "core-conversation-bootstrap", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: "理解请求并执行只读操作", Goal: item.Goal, AllowedTools: []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet"}, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_agent", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的模型 Agent 报告", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: contracts.RiskRead, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 4, MaxDurationMS: int64((5 * time.Minute).Milliseconds()), MaxInputTokens: 8000, MaxOutputTokens: 2000}, ExecutionMode: "AGENT", PreferredRole: "RECON"}}}
+		mode, err := taskPermissionMode(item)
+		if err != nil {
+			mode = contracts.PermissionModeEdit
 		}
-		return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: "在受控工作区内理解请求，使用读取、验证和审批后写入能力完成本轮任务。", CreatedByAgent: "core-conversation-bootstrap", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: "理解请求并执行受控工作区操作", Goal: item.Goal, AllowedTools: []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet", "propose_write_file", "propose_text_replace", "propose_file_batch"}, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_agent", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的模型 Agent 报告", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: contracts.RiskWrite, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: 6, MaxDurationMS: int64((5 * time.Minute).Milliseconds()), MaxInputTokens: 8000, MaxOutputTokens: 2000}, ExecutionMode: "AGENT", PreferredRole: "EXECUTOR"}}}
+		if !allowWriteProposals && mode == contracts.PermissionModeEdit {
+			mode = contracts.PermissionModePlan
+		}
+		toolNames, risk, title, summary, iterations := modePlanShape(mode)
+		role := "EXECUTOR"
+		if mode == contracts.PermissionModePlan {
+			role = "RECON"
+		}
+		return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: summary, CreatedByAgent: "core-conversation-bootstrap", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: title, Goal: item.Goal, AllowedTools: toolNames, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_agent", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的模型 Agent 报告", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: risk, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: iterations, MaxDurationMS: int64((5 * time.Minute).Milliseconds()), MaxInputTokens: 8000, MaxOutputTokens: 2000}, ExecutionMode: "AGENT", PreferredRole: role}}}
 	}
 	return deterministicReconPlan(item)
+}
+
+func normalizedPermissionMode(mode contracts.PermissionMode) (contracts.PermissionMode, error) {
+	if strings.TrimSpace(string(mode)) == "" {
+		// Legacy callers did not persist a profile. EDIT preserves their existing
+		// approval-gated write behaviour instead of silently granting development
+		// authority.
+		return contracts.PermissionModeEdit, nil
+	}
+	return contracts.ParsePermissionMode(string(mode))
+}
+
+func taskPermissionMode(item contracts.Task) (contracts.PermissionMode, error) {
+	return normalizedPermissionMode(contracts.PermissionMode(item.Spec.PermissionProfileID))
+}
+
+func modePlanShape(mode contracts.PermissionMode) ([]string, contracts.RiskClass, string, string, int) {
+	switch mode {
+	case contracts.PermissionModePlan:
+		return []string{"list_files", "file_info", "read_file", "search_text"}, contracts.RiskRead, "分析与规划（只读）", "在计划模式中只读取工作区信息，不执行命令、不修改文件。", 4
+	case contracts.PermissionModeDevelopment:
+		return []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet", "write_file", "run_project_command"}, contracts.RiskDangerous, "开发执行", "在开发模式中执行受工作区边界、预算和审计约束的开发操作。", 8
+	default:
+		return []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet", "propose_write_file", "propose_text_replace", "propose_file_batch", "propose_project_command"}, contracts.RiskWrite, "编辑与受控执行", "在编辑模式中读取工作区、提交可审阅的文件修改；项目命令必须先取得明确同意。", 7
+	}
 }
 
 func deterministicReconPlan(item contracts.Task) contracts.PlanVersion {
@@ -1267,8 +1595,15 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 		return TaskSnapshot{}, contracts.NewError(contracts.ErrPlanInvalid, "model runner found no executable step before the plan reached a terminal state")
 	}
 	step, found := findStep(planVersion, ready[0])
-	if !found || (step.Risk != contracts.RiskRead && step.Risk != contracts.RiskWrite) {
-		return TaskSnapshot{}, contracts.NewError(contracts.ErrToolNotAllowed, "model runner only executes read steps and approval-gated write proposals")
+	if !found || (step.Risk != contracts.RiskRead && step.Risk != contracts.RiskWrite && step.Risk != contracts.RiskDangerous) {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrToolNotAllowed, "model runner only executes tools permitted by the task permission mode")
+	}
+	permissionMode, err := taskPermissionMode(item)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	if !permissionMode.AllowsRisk(step.Risk) {
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrPermissionDenied, "step risk exceeds the task permission mode")
 	}
 	deployment, err := s.store.GetDeployment(ctx, input.DeploymentID)
 	if err != nil {
@@ -1286,11 +1621,18 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 		return TaskSnapshot{}, err
 	}
 	registry := tool.NewRegistry()
-	if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
-		return TaskSnapshot{}, err
-	}
 	var pending *PendingWriteBatch
-	if step.Risk == contracts.RiskWrite {
+	var pendingCommand *PendingCommand
+	directIntentIDs := map[string]bool{}
+	switch permissionMode {
+	case contracts.PermissionModePlan:
+		if err = tool.RegisterWorkspaceReadTools(registry, workspaceItem.RootPath); err != nil {
+			return TaskSnapshot{}, err
+		}
+	case contracts.PermissionModeEdit:
+		if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
+			return TaskSnapshot{}, err
+		}
 		if err = tool.RegisterWriteProposalTools(registry, workspaceItem.RootPath, func(proposal tool.ProposalRequest) error {
 			if len(proposal.Writes) == 0 || len(proposal.Writes) > 16 {
 				return contracts.NewError(contracts.ErrInvalidInput, "write proposal must contain one to sixteen files")
@@ -1307,6 +1649,38 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 		}); err != nil {
 			return TaskSnapshot{}, err
 		}
+		if err = tool.RegisterCommandProposalTool(registry, func(proposal tool.CommandProposal) error {
+			pendingCommand = &PendingCommand{TaskID: item.ID, StepID: step.StepID, Command: proposal.Command, Arguments: append([]string{}, proposal.Arguments...), TimeoutMS: proposal.TimeoutMS}
+			return nil
+		}); err != nil {
+			return TaskSnapshot{}, err
+		}
+	case contracts.PermissionModeDevelopment:
+		if err = tool.RegisterReadOnly(registry, workspaceItem.RootPath); err != nil {
+			return TaskSnapshot{}, err
+		}
+		recordDirect := func(toolName string, risk contracts.RiskClass, args map[string]interface{}) (string, error) {
+			id, recordErr := s.recordToolIntent(ctx, item, step, toolName, args, risk)
+			if recordErr == nil {
+				directIntentIDs[id] = true
+			}
+			return id, recordErr
+		}
+		if err = tool.RegisterDevelopmentWriteFile(registry, workspaceItem.RootPath, func(args map[string]interface{}) (string, error) {
+			if scopeErr := validateWriteScope(workspaceItem.RootPath, step.WorkspaceScopes, stringArgument(args, "path")); scopeErr != nil {
+				return "", scopeErr
+			}
+			return recordDirect("write_file", contracts.RiskWrite, args)
+		}); err != nil {
+			return TaskSnapshot{}, err
+		}
+		if err = tool.RegisterDevelopmentCommandTool(registry, workspaceItem.RootPath, func(args map[string]interface{}) (string, error) {
+			return recordDirect("run_project_command", contracts.RiskDangerous, args)
+		}); err != nil {
+			return TaskSnapshot{}, err
+		}
+	default:
+		return TaskSnapshot{}, contracts.NewError(contracts.ErrPermissionDenied, "unknown task permission mode")
 	}
 	contextPackage, err := modelContext(item, planVersion, step, deployment.ID, input.ContextPackage, input.ContextSections)
 	if err != nil {
@@ -1332,17 +1706,31 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	if _, err = s.CheckpointTask(ctx, item.ID); err != nil {
 		return TaskSnapshot{}, err
 	}
-	result, runErr := executor.Run(ctx, worker.Input{DeploymentID: deployment.ID, Step: step, ContextPackage: &contextPackage, Skills: input.Skills})
-	if pending != nil && runErr == nil {
-		runErr = contracts.NewError(contracts.ErrApprovalRequired, "a requested workspace change is waiting for user approval")
+	result, runErr := executor.Run(ctx, worker.Input{DeploymentID: deployment.ID, Step: step, PermissionMode: permissionMode, ContextPackage: &contextPackage, Skills: input.Skills})
+	for _, toolResult := range result.ToolResults {
+		if directIntentIDs[toolResult.ToolCallID] {
+			if updateErr := s.store.UpdateToolIntentStatus(ctx, toolResult.ToolCallID, toolResult.Status); updateErr != nil && runErr == nil {
+				runErr = updateErr
+			}
+		}
+	}
+	if (pending != nil || pendingCommand != nil) && runErr == nil {
+		runErr = contracts.NewError(contracts.ErrApprovalRequired, "a requested operation is waiting for user approval")
 	}
 	if runErr != nil {
-		if pending != nil {
+		if pending != nil || pendingCommand != nil {
 			if err = s.persistAgentReport(ctx, item, step.StepID, result); err != nil {
 				return TaskSnapshot{}, err
 			}
-			if err = s.persistPendingWrite(ctx, item, step.StepID, *pending); err != nil {
-				return TaskSnapshot{}, err
+			if pending != nil {
+				if err = s.persistPendingWrite(ctx, item, step.StepID, *pending); err != nil {
+					return TaskSnapshot{}, err
+				}
+			}
+			if pendingCommand != nil {
+				if err = s.persistPendingCommand(ctx, item, step.StepID, *pendingCommand); err != nil {
+					return TaskSnapshot{}, err
+				}
 			}
 			if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepRunning, contracts.StepWaitingApproval, "STEP_STATUS_CHANGED"); err != nil {
 				return TaskSnapshot{}, err
@@ -1359,10 +1747,14 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	if err = s.persistAgentReport(ctx, item, step.StepID, result); err != nil {
 		return TaskSnapshot{}, err
 	}
-	if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepRunning, contracts.StepVerifying, "STEP_STATUS_CHANGED"); err != nil {
+	return s.completeModelStep(ctx, item, planVersion, step.StepID)
+}
+
+func (s *Service) completeModelStep(ctx context.Context, item contracts.Task, planVersion contracts.PlanVersion, stepID string) (TaskSnapshot, error) {
+	if err := s.transitionStep(ctx, item.ID, stepID, contracts.StepRunning, contracts.StepVerifying, "STEP_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
 	}
-	if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepVerifying, contracts.StepCompleted, "STEP_STATUS_CHANGED"); err != nil {
+	if err := s.transitionStep(ctx, item.ID, stepID, contracts.StepVerifying, contracts.StepCompleted, "STEP_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
 	}
 	updatedSteps, err := s.store.GetSteps(ctx, planVersion.PlanID)

@@ -1,16 +1,36 @@
 export namespace app {
-
+	
+	export class PendingCommand {
+	    task_id: string;
+	    step_id: string;
+	    command: string;
+	    arguments: string[];
+	    timeout_ms: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PendingCommand(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.task_id = source["task_id"];
+	        this.step_id = source["step_id"];
+	        this.command = source["command"];
+	        this.arguments = source["arguments"];
+	        this.timeout_ms = source["timeout_ms"];
+	    }
+	}
 	export class PendingWrite {
 	    task_id: string;
 	    step_id: string;
 	    path: string;
 	    content: string;
 	    expected_content_hash: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new PendingWrite(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.task_id = source["task_id"];
@@ -24,18 +44,18 @@ export namespace app {
 	    task_id: string;
 	    step_id: string;
 	    writes: PendingWrite[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new PendingWriteBatch(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.task_id = source["task_id"];
 	        this.step_id = source["step_id"];
 	        this.writes = this.convertValues(source["writes"], PendingWrite);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -59,11 +79,11 @@ export namespace app {
 	    plan: contracts.PlanVersion;
 	    steps: contracts.StepRuntime[];
 	    events: contracts.EventEnvelope[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TaskSnapshot(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.task = this.convertValues(source["task"], contracts.Task);
@@ -71,7 +91,7 @@ export namespace app {
 	        this.steps = this.convertValues(source["steps"], contracts.StepRuntime);
 	        this.events = this.convertValues(source["events"], contracts.EventEnvelope);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -94,17 +114,17 @@ export namespace app {
 }
 
 export namespace contracts {
-
+	
 	export class AcceptanceCriterion {
 	    id: string;
 	    type: string;
 	    description: string;
 	    spec: Record<string, any>;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new AcceptanceCriterion(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -123,11 +143,11 @@ export namespace contracts {
 	    reliable_context_tokens: number;
 	    // Go type: time
 	    probed_at: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CapabilitySnapshot(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.capability_snapshot_id = source["capability_snapshot_id"];
@@ -139,7 +159,7 @@ export namespace contracts {
 	        this.reliable_context_tokens = source["reliable_context_tokens"];
 	        this.probed_at = this.convertValues(source["probed_at"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -162,11 +182,11 @@ export namespace contracts {
 	    id: string;
 	    text: string;
 	    hard: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Constraint(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -182,11 +202,11 @@ export namespace contracts {
 	    content: string;
 	    // Go type: time
 	    created_at: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConversationMessage(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.message_id = source["message_id"];
@@ -196,7 +216,7 @@ export namespace contracts {
 	        this.content = source["content"];
 	        this.created_at = this.convertValues(source["created_at"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -234,11 +254,11 @@ export namespace contracts {
 	    created_at: any;
 	    // Go type: time
 	    updated_at: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Deployment(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.deployment_id = source["deployment_id"];
@@ -258,7 +278,7 @@ export namespace contracts {
 	        this.created_at = this.convertValues(source["created_at"], null);
 	        this.updated_at = this.convertValues(source["updated_at"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -292,11 +312,11 @@ export namespace contracts {
 	    correlation_id?: string;
 	    causation_id?: string;
 	    payload: Record<string, any>;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new EventEnvelope(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.event_id = source["event_id"];
@@ -313,7 +333,7 @@ export namespace contracts {
 	        this.causation_id = source["causation_id"];
 	        this.payload = source["payload"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -336,11 +356,11 @@ export namespace contracts {
 	    name: string;
 	    type: string;
 	    required: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ExpectedOutput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -354,11 +374,11 @@ export namespace contracts {
 	    max_duration_ms: number;
 	    max_input_tokens: number;
 	    max_output_tokens: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new StepBudget(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.max_attempts = source["max_attempts"];
@@ -382,11 +402,11 @@ export namespace contracts {
 	    budget: StepBudget;
 	    execution_mode: string;
 	    preferred_role: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new StepSpec(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.version = source["version"];
@@ -403,7 +423,7 @@ export namespace contracts {
 	        this.execution_mode = source["execution_mode"];
 	        this.preferred_role = source["preferred_role"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -434,11 +454,11 @@ export namespace contracts {
 	    created_by_agent_id: string;
 	    // Go type: time
 	    created_at: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new PlanVersion(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.version = source["version"];
@@ -452,7 +472,7 @@ export namespace contracts {
 	        this.created_by_agent_id = source["created_by_agent_id"];
 	        this.created_at = this.convertValues(source["created_at"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -471,7 +491,7 @@ export namespace contracts {
 		    return a;
 		}
 	}
-
+	
 	export class StepRuntime {
 	    step_id: string;
 	    plan_id: string;
@@ -479,11 +499,11 @@ export namespace contracts {
 	    evidence_ids: string[];
 	    artifact_ids: string[];
 	    last_error_code?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new StepRuntime(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.step_id = source["step_id"];
@@ -494,7 +514,7 @@ export namespace contracts {
 	        this.last_error_code = source["last_error_code"];
 	    }
 	}
-
+	
 	export class TaskBudget {
 	    max_duration_ms: number;
 	    max_steps: number;
@@ -502,11 +522,11 @@ export namespace contracts {
 	    max_model_input_tokens: number;
 	    max_model_output_tokens: number;
 	    max_cost?: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TaskBudget(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.max_duration_ms = source["max_duration_ms"];
@@ -533,11 +553,11 @@ export namespace contracts {
 	    allow_subagents: boolean;
 	    // Go type: time
 	    created_at: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TaskSpec(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.version = source["version"];
@@ -555,7 +575,7 @@ export namespace contracts {
 	        this.allow_subagents = source["allow_subagents"];
 	        this.created_at = this.convertValues(source["created_at"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -587,11 +607,11 @@ export namespace contracts {
 	    created_at: any;
 	    // Go type: time
 	    updated_at: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Task(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -605,7 +625,7 @@ export namespace contracts {
 	        this.created_at = this.convertValues(source["created_at"], null);
 	        this.updated_at = this.convertValues(source["updated_at"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -624,7 +644,8 @@ export namespace contracts {
 		    return a;
 		}
 	}
-
+	
+	
 	export class Workspace {
 	    id: string;
 	    version: number;
@@ -634,11 +655,11 @@ export namespace contracts {
 	    created_at: any;
 	    // Go type: time
 	    updated_at: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Workspace(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -648,7 +669,7 @@ export namespace contracts {
 	        this.created_at = this.convertValues(source["created_at"], null);
 	        this.updated_at = this.convertValues(source["updated_at"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -671,7 +692,7 @@ export namespace contracts {
 }
 
 export namespace diagnostics {
-
+	
 	export class Entry {
 	    // Go type: time
 	    timestamp: any;
@@ -679,11 +700,11 @@ export namespace diagnostics {
 	    component: string;
 	    message: string;
 	    fields?: Record<string, string>;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Entry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.timestamp = this.convertValues(source["timestamp"], null);
@@ -692,7 +713,7 @@ export namespace diagnostics {
 	        this.message = source["message"];
 	        this.fields = source["fields"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -715,18 +736,19 @@ export namespace diagnostics {
 }
 
 export namespace main {
-
+	
 	export class TurnReportView {
 	    summary: string;
 	    tool_name: string;
 	    files: string[];
 	    truncated: boolean;
 	    pending_write?: app.PendingWriteBatch;
-
+	    pending_command?: app.PendingCommand;
+	
 	    static createFrom(source: any = {}) {
 	        return new TurnReportView(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.summary = source["summary"];
@@ -734,8 +756,9 @@ export namespace main {
 	        this.files = source["files"];
 	        this.truncated = source["truncated"];
 	        this.pending_write = this.convertValues(source["pending_write"], app.PendingWriteBatch);
+	        this.pending_command = this.convertValues(source["pending_command"], app.PendingCommand);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -757,17 +780,17 @@ export namespace main {
 	export class ConversationTurn {
 	    snapshot: app.TaskSnapshot;
 	    report: TurnReportView;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConversationTurn(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.snapshot = this.convertValues(source["snapshot"], app.TaskSnapshot);
 	        this.report = this.convertValues(source["report"], TurnReportView);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -790,18 +813,18 @@ export namespace main {
 	    conversation: contracts.Task;
 	    messages: contracts.ConversationMessage[];
 	    turns: ConversationTurn[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConversationView(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.conversation = this.convertValues(source["conversation"], contracts.Task);
 	        this.messages = this.convertValues(source["messages"], contracts.ConversationMessage);
 	        this.turns = this.convertValues(source["turns"], ConversationTurn);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -822,3 +845,4 @@ export namespace main {
 	}
 
 }
+
