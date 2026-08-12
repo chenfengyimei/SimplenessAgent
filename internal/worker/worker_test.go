@@ -46,6 +46,35 @@ func TestRunGoldenReadOnlyToolLoop(t *testing.T) {
 	}
 }
 
+func TestRunExecutesParallelReadOnlyToolCallsInResponseOrder(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{
+		{ToolCalls: []contracts.ToolCall{
+			{ID: "call_first", Name: "lookup", ArgumentsJSON: `{"query":"first"}`},
+			{ID: "call_second", Name: "lookup", ArgumentsJSON: `{"query":"second"}`},
+		}},
+		{Text: "已完成两项检索。"},
+	}}
+	calls := []string{}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(_ context.Context, args map[string]interface{}) (contracts.ToolResult, error) {
+		calls = append(calls, args["query"].(string))
+		return contracts.ToolResult{Status: "SUCCEEDED", Summary: args["query"].(string)}, nil
+	})
+	executor, err := New(provider, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := executor.Run(context.Background(), Input{Step: testStep(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "已完成两项检索。" || len(result.ToolResults) != 2 || strings.Join(calls, ",") != "first,second" {
+		t.Fatalf("parallel tool calls were not safely completed: result=%#v calls=%#v", result, calls)
+	}
+	if len(provider.requests) != 2 || len(provider.requests[1].Messages) != 5 || provider.requests[1].Messages[3].ToolCallID != "call_first" || provider.requests[1].Messages[4].ToolCallID != "call_second" {
+		t.Fatalf("tool result messages were not preserved in order: %#v", provider.requests)
+	}
+}
+
 func TestRunRejectsSkillOutsideStepBoundary(t *testing.T) {
 	provider := &scriptedProvider{responses: []contracts.ChatResponse{{Text: "not reached"}}}
 	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
