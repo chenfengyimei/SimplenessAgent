@@ -4,8 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/xm/simplenessagent/internal/app"
+	"github.com/xm/simplenessagent/internal/provider/openai"
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
 
@@ -14,6 +16,7 @@ type App struct {
 	ctx     context.Context
 	service *app.Service
 	openErr error
+	apiKey  string
 }
 
 // NewApp creates a new App application struct
@@ -30,7 +33,14 @@ func (a *App) startup(ctx context.Context) {
 		a.openErr = err
 		return
 	}
-	a.service, a.openErr = app.Open(ctx, app.Config{DataDir: dataDir})
+	a.service, a.openErr = app.Open(ctx, app.Config{DataDir: dataDir, ResolveProvider: a.resolveProvider})
+}
+
+func (a *App) resolveProvider(deployment contracts.Deployment) (contracts.ChatProvider, error) {
+	if deployment.ProviderType != "openai_compatible" {
+		return nil, contracts.NewError(contracts.ErrCapabilityUnsupported, "desktop supports only openai_compatible deployments")
+	}
+	return openai.New(openai.Config{BaseURL: deployment.Endpoint, APIKey: a.apiKey, Model: deployment.Model, DeploymentID: deployment.ID})
 }
 
 func (a *App) shutdown(_ context.Context) {
@@ -89,11 +99,61 @@ func (a *App) CreateTask(workspaceID, title, goal string) (app.TaskSnapshot, err
 	if err != nil {
 		return app.TaskSnapshot{}, err
 	}
-	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: title, Goal: goal})
+	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: title, Goal: goal, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "agent_report", Type: contracts.AcceptanceEvidenceExists, Description: "bounded agent report persisted", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}})
 	if err != nil {
 		return app.TaskSnapshot{}, err
 	}
 	return service.GetTaskSnapshot(a.ctx, created.ID)
+}
+
+func (a *App) ListDeployments() ([]contracts.Deployment, error) {
+	service, err := a.core()
+	if err != nil {
+		return nil, err
+	}
+	return service.ListDeployments(a.ctx)
+}
+
+// ConfigureOpenAICompatibleDeployment keeps the API key in this running
+// desktop process only. The persisted Deployment contains no secret.
+func (a *App) ConfigureOpenAICompatibleDeployment(name, endpoint, model, apiKey string) (contracts.Deployment, error) {
+	service, err := a.core()
+	if err != nil {
+		return contracts.Deployment{}, err
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		a.apiKey = apiKey
+	}
+	credentialRef := ""
+	if strings.TrimSpace(apiKey) != "" {
+		credentialRef = "desktop-session"
+	}
+	return service.CreateDeployment(a.ctx, contracts.Deployment{Name: name, ProviderType: "openai_compatible", Location: "DESKTOP", Endpoint: endpoint, Model: model, CredentialRef: credentialRef, Enabled: true})
+}
+
+func (a *App) ProbeDeployment(deploymentID string) (contracts.CapabilitySnapshot, error) {
+	service, err := a.core()
+	if err != nil {
+		return contracts.CapabilitySnapshot{}, err
+	}
+	_, snapshot, err := service.ProbeDeployment(a.ctx, deploymentID)
+	return snapshot, err
+}
+
+func (a *App) GeneratePlan(taskID, deploymentID string) (contracts.PlanVersion, error) {
+	service, err := a.core()
+	if err != nil {
+		return contracts.PlanVersion{}, err
+	}
+	return service.GeneratePlan(a.ctx, taskID, deploymentID)
+}
+
+func (a *App) RunAgent(taskID, deploymentID string) (app.TaskSnapshot, error) {
+	service, err := a.core()
+	if err != nil {
+		return app.TaskSnapshot{}, err
+	}
+	return service.RunModelStep(a.ctx, app.RunModelStepInput{TaskID: taskID, DeploymentID: deploymentID})
 }
 
 func (a *App) GetTaskSnapshot(taskID string) (app.TaskSnapshot, error) {

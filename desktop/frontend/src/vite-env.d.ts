@@ -6,6 +6,11 @@ interface Window { go: { main: { App: {
   CreateWorkspace(name: string, path: string): Promise<unknown>
   CreateTask(workspaceID: string, title: string, goal: string): Promise<unknown>
   GetTaskSnapshot(taskID: string): Promise<unknown>
+  ListDeployments(): Promise<unknown[]>
+  ConfigureOpenAICompatibleDeployment(name: string, endpoint: string, model: string, apiKey: string): Promise<unknown>
+  ProbeDeployment(deploymentID: string): Promise<unknown>
+  GeneratePlan(taskID: string, deploymentID: string): Promise<unknown>
+  RunAgent(taskID: string, deploymentID: string): Promise<unknown>
 } } } }
 
 declare module '*.vue' {

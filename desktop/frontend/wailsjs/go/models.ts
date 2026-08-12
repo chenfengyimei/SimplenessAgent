@@ -59,6 +59,51 @@ export namespace contracts {
 	        this.spec = source["spec"];
 	    }
 	}
+	export class CapabilitySnapshot {
+	    capability_snapshot_id?: string;
+	    deployment_id?: string;
+	    version: number;
+	    supports_tools: boolean;
+	    supports_streaming: boolean;
+	    supports_token_count: boolean;
+	    reliable_context_tokens: number;
+	    // Go type: time
+	    probed_at: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new CapabilitySnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.capability_snapshot_id = source["capability_snapshot_id"];
+	        this.deployment_id = source["deployment_id"];
+	        this.version = source["version"];
+	        this.supports_tools = source["supports_tools"];
+	        this.supports_streaming = source["supports_streaming"];
+	        this.supports_token_count = source["supports_token_count"];
+	        this.reliable_context_tokens = source["reliable_context_tokens"];
+	        this.probed_at = this.convertValues(source["probed_at"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Constraint {
 	    id: string;
 	    text: string;
@@ -74,6 +119,68 @@ export namespace contracts {
 	        this.text = source["text"];
 	        this.hard = source["hard"];
 	    }
+	}
+	export class Deployment {
+	    deployment_id: string;
+	    version: number;
+	    name: string;
+	    provider_type: string;
+	    location: string;
+	    endpoint: string;
+	    credential_ref?: string;
+	    model: string;
+	    runtime?: string;
+	    runtime_version?: string;
+	    quantization?: string;
+	    model_profile_id?: string;
+	    capability_snapshot_id?: string;
+	    enabled: boolean;
+	    // Go type: time
+	    created_at: any;
+	    // Go type: time
+	    updated_at: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new Deployment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deployment_id = source["deployment_id"];
+	        this.version = source["version"];
+	        this.name = source["name"];
+	        this.provider_type = source["provider_type"];
+	        this.location = source["location"];
+	        this.endpoint = source["endpoint"];
+	        this.credential_ref = source["credential_ref"];
+	        this.model = source["model"];
+	        this.runtime = source["runtime"];
+	        this.runtime_version = source["runtime_version"];
+	        this.quantization = source["quantization"];
+	        this.model_profile_id = source["model_profile_id"];
+	        this.capability_snapshot_id = source["capability_snapshot_id"];
+	        this.enabled = source["enabled"];
+	        this.created_at = this.convertValues(source["created_at"], null);
+	        this.updated_at = this.convertValues(source["updated_at"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class EventEnvelope {
 	    event_id: string;
