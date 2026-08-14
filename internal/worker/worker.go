@@ -151,6 +151,7 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		if validationError != nil {
 			return result, validationError
 		}
+		batchStart := len(result.ToolResults)
 		toolMessages := make([]contracts.Message, 0, len(validatedCalls))
 		for _, validated := range validatedCalls {
 			seen[validated.actionKey] = struct{}{}
@@ -177,8 +178,46 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		if cumulativeExceeded(stepBudget, result.Usage) {
 			return result, contracts.NewError(contracts.ErrBudgetExceeded, "cumulative token budget exceeded")
 		}
+		if iteration+1 == input.Step.Budget.MaxIterations && successfulReadBatch(validatedCalls, allowed, result.ToolResults[batchStart:]) {
+			// A tool call consumes a model iteration. Small models often use the last
+			// permitted turn for one final, useful read and therefore have no turn
+			// left to paraphrase evidence the controller already persisted. Close only
+			// this safe case deterministically; writes, commands, failed reads and
+			// evidence-free exhaustion still fail closed.
+			result.Text = finalReadEvidenceSummary(input.Step)
+			return result, nil
+		}
 	}
 	return result, contracts.NewError(contracts.ErrBudgetExceeded, "step iteration budget exceeded")
+}
+
+func successfulReadBatch(calls []validatedToolCall, allowed []contracts.ToolDefinition, results []contracts.ToolResult) bool {
+	if len(calls) == 0 || len(results) != len(calls) {
+		return false
+	}
+	for index, call := range calls {
+		definition, found := toolDefinition(allowed, call.call.Name)
+		if !found || definition.RiskClass != contracts.RiskRead || results[index].Status != "SUCCEEDED" {
+			return false
+		}
+	}
+	return true
+}
+
+func finalReadEvidenceSummary(step contracts.StepSpec) string {
+	if containsHan(step.Title + step.Goal) {
+		return "只读工具在本步骤的最后允许回合产生了新的可验证证据；完整工具结果已持久化，供验收器和后续步骤引用。"
+	}
+	return "Read-only tools produced new verifiable evidence on the step's final allowed turn; the complete tool results are persisted for acceptance and subsequent steps."
+}
+
+func containsHan(value string) bool {
+	for _, char := range value {
+		if char >= '\u3400' && char <= '\u9fff' {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *Worker) validateToolCalls(calls []contracts.ToolCall, allowed []contracts.ToolDefinition, seen map[string]struct{}, limit int) ([]validatedToolCall, error) {

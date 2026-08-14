@@ -257,6 +257,41 @@ func TestRunRepairsRepeatedReadWithoutReplayingIt(t *testing.T) {
 	}
 }
 
+func TestRunFinalizesSuccessfulReadEvidenceOnLastIteration(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{
+		{ToolCalls: []contracts.ToolCall{{ID: "read-first", Name: "lookup", ArgumentsJSON: `{"query":"first"}`}}},
+		{ToolCalls: []contracts.ToolCall{{ID: "read-final", Name: "lookup", ArgumentsJSON: `{"query":"final"}`}}},
+	}}
+	queries := []string{}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(_ context.Context, args map[string]interface{}) (contracts.ToolResult, error) {
+		queries = append(queries, args["query"].(string))
+		return contracts.ToolResult{Status: "SUCCEEDED", Summary: "fresh evidence"}, nil
+	})
+	executor, _ := New(provider, registry)
+	step := testStep(2)
+	step.Title = "搜索相关文件"
+	result, err := executor.Run(context.Background(), Input{Step: step})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(queries, ",") != "first,final" || len(result.ToolResults) != 2 || result.Iterations != 2 || !strings.Contains(result.Text, "最后允许回合") {
+		t.Fatalf("last-turn read evidence was not finalized deterministically: result=%#v queries=%#v", result, queries)
+	}
+}
+
+func TestRunDoesNotFinalizeFailedReadOnLastIteration(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "failed-read", Name: "lookup", ArgumentsJSON: `{"query":"missing"}`}}}}}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		return contracts.ToolResult{Status: "FAILED", Summary: "no evidence"}, nil
+	})
+	executor, _ := New(provider, registry)
+	result, err := executor.Run(context.Background(), Input{Step: testStep(1)})
+	assertCode(t, err, contracts.ErrBudgetExceeded)
+	if len(result.ToolResults) != 1 || result.ToolResults[0].Status != "FAILED" || result.Text != "" {
+		t.Fatalf("failed read must remain fail-closed: %#v", result)
+	}
+}
+
 func TestRunStopsAtBudgetAndRejectsWriteTools(t *testing.T) {
 	provider := &scriptedProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{"query":"one"}`}}}}}
 	registry := testRegistry(t, contracts.RiskWrite, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
