@@ -10,6 +10,7 @@ import (
 
 	"github.com/xm/simplenessagent/internal/contextpack"
 	horizoncore "github.com/xm/simplenessagent/internal/horizon"
+	"github.com/xm/simplenessagent/internal/plan"
 	"github.com/xm/simplenessagent/internal/tool"
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
@@ -149,7 +150,7 @@ func (s *Service) AdvanceLongHorizonTask(ctx context.Context, taskID string) (co
 	if err != nil {
 		return contracts.LongHorizonCycleResult{}, err
 	}
-	if hasRunnableStep(steps) {
+	if hasRunnableStep(activePlan, steps) {
 		sections := s.longHorizonContextSections(ctx, item, state)
 		snapshot, runErr := s.RunModelStep(ctx, RunModelStepInput{TaskID: item.ID, DeploymentID: item.Spec.DeploymentID, ContextSections: sections})
 		if runErr != nil {
@@ -195,6 +196,22 @@ func (s *Service) ResumeLongHorizonTask(ctx context.Context, taskID string) (con
 		}
 		err = s.transitionTask(ctx, item.ID, contracts.TaskWaitingUser, contracts.TaskRunning, "HORIZON_CHECKPOINT_APPROVED")
 	case contracts.TaskPaused:
+		// Upgrade checkpoints written before failed plans were explicitly marked
+		// processed. This lets an already-paused task resume into local replanning
+		// instead of retrying dependants of its failed step.
+		if state.LatestFailureArtifactID != "" {
+			planVersion, planErr := s.store.GetLatestPlan(ctx, item.ID)
+			if planErr != nil {
+				return state, planErr
+			}
+			steps, stepErr := s.store.GetSteps(ctx, planVersion.PlanID)
+			if stepErr != nil {
+				return state, stepErr
+			}
+			if hasFailedStep(steps) {
+				state.LastProcessedPlanID = planVersion.PlanID
+			}
+		}
 		err = s.transitionTask(ctx, item.ID, contracts.TaskPaused, contracts.TaskReady, "HORIZON_RESUMED")
 	case contracts.TaskReady, contracts.TaskRunning:
 		// Idempotent resume.
@@ -489,6 +506,10 @@ func (s *Service) recordHorizonFailure(ctx context.Context, item contracts.Task,
 	state.Status = contracts.HorizonPaused
 	state.CheckpointReason = boundedCheckpointReason("cycle failed: "+cause.Error(), 600)
 	state.ReplansUsed++
+	// The failed plan is abandoned at this durable checkpoint. Resume must plan
+	// a new segment from the ledger instead of attempting pending dependants of
+	// a failed step or charging the same failure as a second replan.
+	state.LastProcessedPlanID = activePlan.PlanID
 	latestTask, taskErr := s.store.GetTask(ctx, item.ID)
 	if taskErr != nil {
 		return contracts.LongHorizonCycleResult{}, taskErr
@@ -701,9 +722,17 @@ func requiresStageCheckpoint(policy contracts.StageCheckpointPolicy, completed c
 	return policy == contracts.StageCheckpointEveryStage || policy == contracts.StageCheckpointKeyStages && completed == contracts.HorizonStageDesign
 }
 
-func hasRunnableStep(steps []contracts.StepRuntime) bool {
+func hasRunnableStep(planVersion contracts.PlanVersion, steps []contracts.StepRuntime) bool {
+	statuses := make(map[string]contracts.StepStatus, len(steps))
 	for _, stepState := range steps {
-		if stepState.Status == contracts.StepPending || stepState.Status == contracts.StepReady || stepState.Status == contracts.StepRunning {
+		statuses[stepState.StepID] = stepState.Status
+	}
+	return len(plan.ReadySteps(planVersion, statuses)) > 0
+}
+
+func hasFailedStep(steps []contracts.StepRuntime) bool {
+	for _, stepState := range steps {
+		if stepState.Status == contracts.StepFailed || stepState.Status == contracts.StepBlocked {
 			return true
 		}
 	}

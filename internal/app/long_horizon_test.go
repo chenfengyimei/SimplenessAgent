@@ -186,6 +186,73 @@ func TestLongHorizonPlannerFormatFailureReturnsDurablePausedCycle(t *testing.T) 
 	}
 }
 
+func TestLongHorizonResumeReplansAfterFailedExecutorStep(t *testing.T) {
+	ctx := context.Background()
+	tooMany := contracts.ChatResponse{ToolCalls: []contracts.ToolCall{
+		{ID: "first", Name: "list_files", ArgumentsJSON: `{}`},
+		{ID: "second", Name: "list_files", ArgumentsJSON: `{}`},
+	}}
+	provider := &longHorizonProvider{responses: []contracts.ChatResponse{
+		{Text: `{"summary":"discover","terminal_segment":true,"steps":[{"ref":"first","title":"First","goal":"Inspect the root","tool_intents":["list_files"],"acceptance_intent":"Root is inspected"},{"ref":"second","title":"Second","goal":"Inspect dependencies","dependencies":["first"],"tool_intents":["list_files"],"acceptance_intent":"Dependencies are identified"}]}`},
+		{Text: "First step evidence."},
+		tooMany,
+		tooMany,
+		{Text: `{"summary":"replanned discover","terminal_segment":true,"steps":[{"ref":"recover","title":"Recover discovery","goal":"Inspect the remaining project surface","tool_intents":["list_files"],"acceptance_intent":"Remaining files are identified"}]}`},
+	}}
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) { return provider, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspaceItem, err := service.CreateWorkspace(ctx, "resume", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "small", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "small", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateLongHorizonTask(ctx, CreateLongHorizonTaskInput{DeploymentID: deployment.ID, CreateTaskInput: CreateTaskInput{WorkspaceID: workspaceItem.ID, Title: "resume", Goal: "inspect project", PermissionMode: contracts.PermissionModePlan, StageCheckpointPolicy: contracts.StageCheckpointNone}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for cycleIndex := 0; cycleIndex < 2; cycleIndex++ {
+		if _, err = service.AdvanceLongHorizonTask(ctx, created.ID); err != nil {
+			t.Fatalf("pre-failure cycle %d: %v", cycleIndex, err)
+		}
+	}
+	failed, err := service.AdvanceLongHorizonTask(ctx, created.ID)
+	if err != nil || failed.Status != contracts.HorizonPaused || failed.Action != "FAILED_PAUSED" {
+		t.Fatalf("executor failure was not paused: cycle=%#v err=%v", failed, err)
+	}
+	pausedState, err := service.GetLongHorizonStatus(ctx, created.ID)
+	if err != nil || pausedState.ReplansUsed != 1 || pausedState.LastProcessedPlanID == "" {
+		t.Fatalf("failed segment was not checkpointed once: state=%#v err=%v", pausedState, err)
+	}
+	failedPlanID := pausedState.LastProcessedPlanID
+	// Simulate the checkpoint shape written by the previous release so this test
+	// also proves the user's already-paused task can be resumed after upgrading.
+	pausedState.LastProcessedPlanID = ""
+	if err = service.saveHorizonState(ctx, &pausedState, "TEST_LEGACY_FAILURE_CHECKPOINT", nil); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := service.ResumeLongHorizonTask(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.LastProcessedPlanID != failedPlanID {
+		t.Fatalf("legacy paused checkpoint did not abandon its failed plan: state=%#v", resumed)
+	}
+	replanned, err := service.AdvanceLongHorizonTask(ctx, created.ID)
+	if err != nil || replanned.Action != "SEGMENT_PLANNED" || replanned.Status != contracts.HorizonActive {
+		t.Fatalf("resume did not immediately create a replacement segment: cycle=%#v err=%v", replanned, err)
+	}
+	resumedState, err := service.GetLongHorizonStatus(ctx, created.ID)
+	if err != nil || resumedState.ReplansUsed != 1 || resumedState.StepsPlanned != 3 {
+		t.Fatalf("resume charged the failure twice or lost progress: state=%#v err=%v", resumedState, err)
+	}
+}
+
 func TestLongHorizonAdvancesSegmentsAndWaitsAfterDesign(t *testing.T) {
 	ctx := context.Background()
 	provider := &longHorizonProvider{responses: []contracts.ChatResponse{

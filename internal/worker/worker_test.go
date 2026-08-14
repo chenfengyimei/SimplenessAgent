@@ -176,7 +176,7 @@ func TestRunRepairsTooManyToolsBeforeAnyInvocation(t *testing.T) {
 		}},
 		{ToolCalls: []contracts.ToolCall{{ID: "repaired", Name: "lookup", ArgumentsJSON: `{"query":"only"}`}}},
 		{Text: "Done after bounded retry."},
-	}}
+	}, rejectOrphanToolCalls: true}
 	invocations := 0
 	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(_ context.Context, args map[string]interface{}) (contracts.ToolResult, error) {
 		invocations++
@@ -199,6 +199,35 @@ func TestRunRepairsTooManyToolsBeforeAnyInvocation(t *testing.T) {
 	repair := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content
 	if !strings.Contains(repair, "requested 2 tools") || !strings.Contains(repair, "limit is 1") {
 		t.Fatalf("repair prompt did not explain the tool-call limit: %s", repair)
+	}
+	for _, message := range provider.requests[1].Messages {
+		if len(message.ToolCalls) != 0 {
+			t.Fatalf("rejected tool calls were replayed without tool results: %#v", provider.requests[1].Messages)
+		}
+	}
+}
+
+func TestRunPrevalidatesEntireToolBatchBeforeInvocation(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{
+		{ToolCalls: []contracts.ToolCall{
+			{ID: "valid_but_not_executed", Name: "lookup", ArgumentsJSON: `{"query":"must-not-run"}`},
+			{ID: "invalid", Name: "lookup", ArgumentsJSON: `{}`},
+		}},
+		{ToolCalls: []contracts.ToolCall{{ID: "fixed", Name: "lookup", ArgumentsJSON: `{"query":"fixed"}`}}},
+		{Text: "Validated before execution."},
+	}, rejectOrphanToolCalls: true}
+	queries := []string{}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(_ context.Context, args map[string]interface{}) (contracts.ToolResult, error) {
+		queries = append(queries, args["query"].(string))
+		return contracts.ToolResult{Status: "SUCCEEDED", Summary: "validated"}, nil
+	})
+	executor, _ := New(provider, registry)
+	result, err := executor.Run(context.Background(), Input{Step: testStep(3), MaxToolCallsPerResponse: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "Validated before execution." || strings.Join(queries, ",") != "fixed" || len(result.ToolResults) != 1 {
+		t.Fatalf("a partially invalid batch caused an invocation: result=%#v queries=%#v", result, queries)
 	}
 }
 
@@ -369,14 +398,32 @@ func assertCode(t *testing.T, err error, wanted contracts.ErrorCode) {
 }
 
 type scriptedProvider struct {
-	responses  []contracts.ChatResponse
-	chatErrors []error
-	requests   []contracts.ChatRequest
-	delay      time.Duration
+	responses             []contracts.ChatResponse
+	chatErrors            []error
+	requests              []contracts.ChatRequest
+	delay                 time.Duration
+	rejectOrphanToolCalls bool
 }
 
 func (p *scriptedProvider) Chat(_ context.Context, request contracts.ChatRequest) (contracts.ChatResponse, error) {
 	p.requests = append(p.requests, request)
+	if p.rejectOrphanToolCalls {
+		for index, message := range request.Messages {
+			if len(message.ToolCalls) == 0 {
+				continue
+			}
+			pending := map[string]bool{}
+			for _, call := range message.ToolCalls {
+				pending[call.ID] = true
+			}
+			for next := index + 1; next < len(request.Messages) && request.Messages[next].Role == "tool"; next++ {
+				delete(pending, request.Messages[next].ToolCallID)
+			}
+			if len(pending) != 0 {
+				return contracts.ChatResponse{}, contracts.NewError(contracts.ErrInvalidInput, "assistant tool_calls must be followed by matching tool messages")
+			}
+		}
+	}
 	if p.delay > 0 {
 		time.Sleep(p.delay)
 	}

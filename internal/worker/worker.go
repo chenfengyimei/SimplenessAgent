@@ -57,6 +57,12 @@ type Result struct {
 	ContextRecompilations int
 }
 
+type validatedToolCall struct {
+	call      contracts.ToolCall
+	arguments map[string]interface{}
+	actionKey string
+}
+
 func New(provider contracts.ChatProvider, registry *tool.Registry) (*Worker, error) {
 	if provider == nil || registry == nil {
 		return nil, contracts.NewError(contracts.ErrInvalidInput, "provider and tool registry are required")
@@ -132,31 +138,23 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		if toolCallLimit <= 0 {
 			toolCallLimit = maxToolCallsPerResponse
 		}
-		var validationError error
-		if len(response.ToolCalls) > toolCallLimit {
-			validationError = contracts.NewError(contracts.ErrInvalidToolCall, fmt.Sprintf("model requested %d tools in one response; the limit is %d", len(response.ToolCalls), toolCallLimit))
+		validatedCalls, validationError := w.validateToolCalls(response.ToolCalls, allowed, seen, toolCallLimit)
+		if validationError != nil && !repairAttempted && iteration+1 < input.Step.Budget.MaxIterations && repairableToolCallError(validationError) {
+			// Never replay a rejected assistant.tool_calls message. OpenAI-compatible
+			// APIs require every such message to be followed immediately by one tool
+			// response per tool_call_id; a controller repair instruction is not a tool
+			// response and would make the next provider request invalid.
+			messages = append(messages, contracts.Message{Role: "user", Content: "The controller rejected your previous tool request before executing any tool: " + validationError.Error() + ". Fix it and retry. Request no more than the configured number of tools, and ensure every tool argument is valid JSON matching its parameter schema."})
+			repairAttempted = true
+			continue
 		}
-		toolMessages := make([]contracts.Message, 0, len(response.ToolCalls))
-		for _, call := range response.ToolCalls {
-			if validationError != nil {
-				break
-			}
-			definition, ok := w.registry.Definition(call.Name)
-			if !ok || !containsTool(allowed, call.Name) {
-				validationError = contracts.NewError(contracts.ErrToolNotAllowed, "requested tool is not allowed for this step")
-				break
-			}
-			arguments, canonical, err := decodeAndValidate(call, definition)
-			if err != nil {
-				validationError = err
-				break
-			}
-			key := actionKey(call.Name, canonical)
-			if _, duplicate := seen[key]; duplicate {
-				return result, contracts.NewError(contracts.ErrRepeatedAction, "repeating an identical tool action is blocked")
-			}
-			seen[key] = struct{}{}
-			toolResult, err := tool.Invoke(w.registry, call.Name)(runContext, arguments)
+		if validationError != nil {
+			return result, validationError
+		}
+		toolMessages := make([]contracts.Message, 0, len(validatedCalls))
+		for _, validated := range validatedCalls {
+			seen[validated.actionKey] = struct{}{}
+			toolResult, err := tool.Invoke(w.registry, validated.call.Name)(runContext, validated.arguments)
 			if err != nil {
 				return result, err
 			}
@@ -171,16 +169,7 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 			if err != nil {
 				return result, fmt.Errorf("encode tool result: %w", err)
 			}
-			toolMessages = append(toolMessages, contracts.Message{Role: "tool", ToolCallID: call.ID, Content: string(encodedResult)})
-		}
-		if validationError != nil && !repairAttempted && iteration+1 < input.Step.Budget.MaxIterations {
-			messages = append(messages, contracts.Message{Role: "assistant", Content: response.Text, ToolCalls: response.ToolCalls})
-			messages = append(messages, contracts.Message{Role: "user", Content: "Your previous tool call had an error: " + validationError.Error() + ". Fix it and retry. Request no more than the configured number of tools, and ensure every tool argument is valid JSON matching its parameter schema."})
-			repairAttempted = true
-			continue
-		}
-		if validationError != nil {
-			return result, validationError
+			toolMessages = append(toolMessages, contracts.Message{Role: "tool", ToolCallID: validated.call.ID, Content: string(encodedResult)})
 		}
 		messages = append(messages, contracts.Message{Role: "assistant", Content: response.Text, ToolCalls: response.ToolCalls})
 		messages = append(messages, toolMessages...)
@@ -190,6 +179,47 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		}
 	}
 	return result, contracts.NewError(contracts.ErrBudgetExceeded, "step iteration budget exceeded")
+}
+
+func (w *Worker) validateToolCalls(calls []contracts.ToolCall, allowed []contracts.ToolDefinition, seen map[string]struct{}, limit int) ([]validatedToolCall, error) {
+	if len(calls) > limit {
+		return nil, contracts.NewError(contracts.ErrInvalidToolCall, fmt.Sprintf("model requested %d tools in one response; the limit is %d", len(calls), limit))
+	}
+	validated := make([]validatedToolCall, 0, len(calls))
+	batchActions := map[string]struct{}{}
+	callIDs := map[string]struct{}{}
+	for _, call := range calls {
+		if _, duplicate := callIDs[call.ID]; duplicate {
+			return nil, contracts.NewError(contracts.ErrInvalidToolCall, "tool call IDs must be unique within one response")
+		}
+		callIDs[call.ID] = struct{}{}
+		definition, ok := w.registry.Definition(call.Name)
+		if !ok || !containsTool(allowed, call.Name) {
+			return nil, contracts.NewError(contracts.ErrToolNotAllowed, "requested tool is not allowed for this step")
+		}
+		arguments, canonical, err := decodeAndValidate(call, definition)
+		if err != nil {
+			return nil, err
+		}
+		key := actionKey(call.Name, canonical)
+		if _, duplicate := seen[key]; duplicate {
+			return nil, contracts.NewError(contracts.ErrRepeatedAction, "repeating an identical tool action is blocked")
+		}
+		if _, duplicate := batchActions[key]; duplicate {
+			return nil, contracts.NewError(contracts.ErrRepeatedAction, "duplicate tool actions in one response are blocked")
+		}
+		batchActions[key] = struct{}{}
+		validated = append(validated, validatedToolCall{call: call, arguments: arguments, actionKey: key})
+	}
+	return validated, nil
+}
+
+func repairableToolCallError(err error) bool {
+	var domain *contracts.Error
+	if !errors.As(err, &domain) {
+		return false
+	}
+	return domain.Code == contracts.ErrInvalidToolCall || domain.Code == contracts.ErrToolNotAllowed
 }
 
 func recompileAtSoftLimit(ctx context.Context, provider contracts.ChatProvider, deploymentID string, messages []contracts.Message, tools []contracts.ToolDefinition, window int) ([]contracts.Message, bool) {
