@@ -99,6 +99,27 @@ func projectCommandInvocation(proposal CommandProposal) (string, []string, bool)
 		return npmExecutable(), []string{"test", "--"}, true
 	case "npm_build":
 		return npmExecutable(), []string{"run", "build", "--"}, true
+	case "npm_init":
+		return npmExecutable(), append([]string{"init", "--"}, proposal.Arguments...), true
+	case "npm_install":
+		return npmExecutable(), append([]string{"install"}, proposal.Arguments...), true
+	case "npm_run":
+		if len(proposal.Arguments) == 0 {
+			return "", nil, false
+		}
+		return npmExecutable(), append([]string{"run"}, proposal.Arguments...), true
+	case "npx":
+		if len(proposal.Arguments) == 0 {
+			return "", nil, false
+		}
+		return npxExecutable(), proposal.Arguments, true
+	case "python":
+		if len(proposal.Arguments) == 0 {
+			return "", nil, false
+		}
+		return pythonExecutable(), proposal.Arguments, true
+	case "pip_install":
+		return pipExecutable(), append([]string{"install"}, proposal.Arguments...), true
 	default:
 		return "", nil, false
 	}
@@ -109,6 +130,27 @@ func npmExecutable() string {
 		return "npm.cmd"
 	}
 	return "npm"
+}
+
+func npxExecutable() string {
+	if runtime.GOOS == "windows" {
+		return "npx.cmd"
+	}
+	return "npx"
+}
+
+func pythonExecutable() string {
+	if runtime.GOOS == "windows" {
+		return "python.exe"
+	}
+	return "python3"
+}
+
+func pipExecutable() string {
+	if runtime.GOOS == "windows" {
+		return "pip.exe"
+	}
+	return "pip3"
 }
 
 func projectCommandSummary(proposal CommandProposal) string {

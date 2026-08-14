@@ -122,14 +122,32 @@ func TestRunRejectsToolOutsideStepAllowlist(t *testing.T) {
 }
 
 func TestRunRejectsInvalidOrRepeatedToolActions(t *testing.T) {
-	t.Run("invalid schema", func(t *testing.T) {
-		provider := &scriptedProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{}`}}}}}
+	t.Run("invalid schema with retry", func(t *testing.T) {
+		invalidResponse := contracts.ChatResponse{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{}`}}}
+		validResponse := contracts.ChatResponse{ToolCalls: []contracts.ToolCall{{ID: "call_2", Name: "lookup", ArgumentsJSON: `{"query":"fixed"}`}}}
+		textResponse := contracts.ChatResponse{Text: "Done after retry."}
+		provider := &scriptedProvider{responses: []contracts.ChatResponse{invalidResponse, validResponse, textResponse}}
+		registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(_ context.Context, args map[string]interface{}) (contracts.ToolResult, error) {
+			return contracts.ToolResult{Status: "SUCCEEDED", Summary: "recovered after retry"}, nil
+		})
+		worker, _ := New(provider, registry)
+		result, err := worker.Run(context.Background(), Input{Step: testStep(3)})
+		if err != nil {
+			t.Fatalf("expected retry to succeed, got error: %v", err)
+		}
+		if len(result.ToolResults) != 1 || result.ToolResults[0].Summary != "recovered after retry" {
+			t.Fatalf("unexpected results: %#v", result)
+		}
+	})
+	t.Run("invalid schema exhausts retry", func(t *testing.T) {
+		invalidResponse := contracts.ChatResponse{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{}`}}}
+		provider := &scriptedProvider{responses: []contracts.ChatResponse{invalidResponse, invalidResponse}}
 		registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
 			t.Fatal("invalid tool must not run")
 			return contracts.ToolResult{}, nil
 		})
 		worker, _ := New(provider, registry)
-		_, err := worker.Run(context.Background(), Input{Step: testStep(2)})
+		_, err := worker.Run(context.Background(), Input{Step: testStep(3)})
 		assertCode(t, err, contracts.ErrInvalidToolCall)
 	})
 	t.Run("repeated action", func(t *testing.T) {

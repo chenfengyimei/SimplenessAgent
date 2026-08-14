@@ -77,6 +77,7 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 	}
 	result := Result{}
 	seen := map[string]struct{}{}
+	repairAttempted := false
 	for iteration := 0; iteration < input.Step.Budget.MaxIterations; iteration++ {
 		if err := runContext.Err(); err != nil {
 			return result, cancelledOrTimedOut(err)
@@ -102,14 +103,17 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 			return result, contracts.NewError(contracts.ErrInvalidToolCall, "model requested too many tools in one response")
 		}
 		toolMessages := make([]contracts.Message, 0, len(response.ToolCalls))
+		var validationError error
 		for _, call := range response.ToolCalls {
 			definition, ok := w.registry.Definition(call.Name)
 			if !ok || !containsTool(allowed, call.Name) {
-				return result, contracts.NewError(contracts.ErrToolNotAllowed, "requested tool is not allowed for this step")
+				validationError = contracts.NewError(contracts.ErrToolNotAllowed, "requested tool is not allowed for this step")
+				break
 			}
 			arguments, canonical, err := decodeAndValidate(call, definition)
 			if err != nil {
-				return result, err
+				validationError = err
+				break
 			}
 			key := actionKey(call.Name, canonical)
 			if _, duplicate := seen[key]; duplicate {
@@ -132,6 +136,16 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 				return result, fmt.Errorf("encode tool result: %w", err)
 			}
 			toolMessages = append(toolMessages, contracts.Message{Role: "tool", ToolCallID: call.ID, Content: string(encodedResult)})
+		}
+		if validationError != nil && !repairAttempted && iteration+1 < input.Step.Budget.MaxIterations {
+			messages = append(messages, contracts.Message{Role: "assistant", Content: response.Text, ToolCalls: response.ToolCalls})
+			messages = append(messages, contracts.Message{Role: "user", Content: "Your previous tool call had an error: " + validationError.Error() + ". Please fix the issue and retry. Ensure tool arguments are valid JSON matching the tool's parameter schema."})
+			result.Iterations++
+			repairAttempted = true
+			continue
+		}
+		if validationError != nil {
+			return result, validationError
 		}
 		messages = append(messages, contracts.Message{Role: "assistant", Content: response.Text, ToolCalls: response.ToolCalls})
 		messages = append(messages, toolMessages...)
@@ -283,7 +297,7 @@ func workerToolPermitted(definition contracts.ToolDefinition) bool {
 		return true
 	}
 	if definition.RiskClass == contracts.RiskWrite {
-		return strings.HasPrefix(definition.Name, "propose_") || definition.Name == "write_file"
+		return strings.HasPrefix(definition.Name, "propose_") || definition.Name == "write_file" || definition.Name == "apply_patch"
 	}
 	if definition.RiskClass == contracts.RiskDangerous {
 		return definition.Name == "run_project_command"

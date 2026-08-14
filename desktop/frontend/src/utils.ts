@@ -34,7 +34,7 @@ export function knownMode(value?: string): PermissionMode | null {
 
 export function commandText(command?: PendingCommand): string {
   if (!command) return ''
-  const labels: Record<string, string> = { go_test: 'go test', go_vet: 'go vet', npm_test: 'npm test', npm_build: 'npm run build' }
+  const labels: Record<string, string> = { go_test: 'go test', go_vet: 'go vet', npm_test: 'npm test', npm_build: 'npm run build', npm_init: 'npm init', npm_install: 'npm install', npm_run: 'npm run', npx: 'npx', python: 'python', pip_install: 'pip install' }
   return `${labels[command.command] ?? command.command}${command.arguments?.length ? ` ${command.arguments.join(' ')}` : ''}`
 }
 

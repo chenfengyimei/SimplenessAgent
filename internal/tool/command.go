@@ -165,8 +165,8 @@ func commandTimeout(value interface{}, fallback time.Duration) time.Duration {
 	if !ok || milliseconds <= 0 {
 		return fallback
 	}
-	if milliseconds > int((60 * time.Second).Milliseconds()) {
-		return 60 * time.Second
+	if milliseconds > int((120 * time.Second).Milliseconds()) {
+		return 120 * time.Second
 	}
 	return time.Duration(milliseconds) * time.Millisecond
 }

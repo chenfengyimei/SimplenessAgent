@@ -62,7 +62,11 @@ func ParseProjectCommand(args map[string]interface{}) (CommandProposal, error) {
 	if !projectCommandArgumentsAllowed(command, arguments) {
 		return CommandProposal{}, contracts.NewError(contracts.ErrInvalidInput, "command arguments are not allowed for this command")
 	}
-	timeout := commandTimeout(args["timeout_ms"], 30*time.Second)
+	defaultTimeout := 30 * time.Second
+	if command == "npm_init" || command == "npm_install" || command == "npx" || command == "pip_install" {
+		defaultTimeout = 60 * time.Second
+	}
+	timeout := commandTimeout(args["timeout_ms"], defaultTimeout)
 	return CommandProposal{Command: command, Arguments: arguments, TimeoutMS: int(timeout.Milliseconds())}, nil
 }
 
@@ -83,12 +87,32 @@ func commandArguments(value interface{}) ([]string, error) {
 }
 
 func isProjectCommand(command string) bool {
-	return command == "go_test" || command == "go_vet" || command == "npm_test" || command == "npm_build"
+	switch command {
+	case "go_test", "go_vet", "npm_test", "npm_build", "npm_init", "npm_install", "npm_run", "npx", "python", "pip_install":
+		return true
+	default:
+		return false
+	}
 }
 
 func projectCommandArgumentsAllowed(command string, arguments []string) bool {
 	if command == "npm_test" || command == "npm_build" {
 		return len(arguments) == 0
+	}
+	if command == "npm_init" || command == "npm_install" {
+		return len(arguments) <= 16
+	}
+	if command == "npm_run" {
+		return len(arguments) >= 1 && len(arguments) <= 4
+	}
+	if command == "npx" {
+		return len(arguments) >= 1 && len(arguments) <= 8
+	}
+	if command == "python" {
+		return len(arguments) >= 1 && len(arguments) <= 8
+	}
+	if command == "pip_install" {
+		return len(arguments) >= 1 && len(arguments) <= 16
 	}
 	if len(arguments) == 0 || len(arguments) > 16 {
 		return false
