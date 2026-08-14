@@ -118,6 +118,10 @@ func (s *Service) ListTaskArtifacts(ctx context.Context, taskID string) ([]contr
 	return s.store.ListTaskArtifacts(ctx, taskID)
 }
 
+func (s *Service) GetLatestPlan(ctx context.Context, taskID string) (contracts.PlanVersion, error) {
+	return s.store.GetLatestPlan(ctx, taskID)
+}
+
 // ReadTaskArtifact returns the verified content of a task artifact. Keeping
 // this behind Service preserves the content-addressed artifact boundary for
 // desktop consumers.

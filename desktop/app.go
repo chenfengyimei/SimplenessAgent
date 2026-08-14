@@ -641,3 +641,80 @@ func desktopDataDir() (string, error) {
 	}
 	return filepath.Join(root, "SimplenessAgent"), nil
 }
+
+func (a *App) ListTaskArtifacts(taskID string) ([]contracts.Artifact, error) {
+	service, err := a.core()
+	if err != nil {
+		return nil, err
+	}
+	return service.ListTaskArtifacts(a.ctx, taskID)
+}
+
+func (a *App) ReadTaskArtifact(taskID, kind string) (string, error) {
+	service, err := a.core()
+	if err != nil {
+		return "", err
+	}
+	content, err := service.ReadTaskArtifact(a.ctx, taskID, kind)
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
+type PlanStepView struct {
+	StepID        string   `json:"step_id"`
+	Title         string   `json:"title"`
+	Goal          string   `json:"goal"`
+	Status        string   `json:"status"`
+	Dependencies  []string `json:"dependencies"`
+	AllowedTools  []string `json:"allowed_tools"`
+	Risk          string   `json:"risk"`
+}
+
+type PlanViewData struct {
+	PlanID     string         `json:"plan_id"`
+	TaskID     string         `json:"task_id"`
+	Revision   int            `json:"revision"`
+	Summary    string         `json:"summary"`
+	Reason     string         `json:"reason"`
+	Steps      []PlanStepView `json:"steps"`
+	CreatedAt  time.Time      `json:"created_at"`
+}
+
+func (a *App) GetTaskPlan(taskID string) (PlanViewData, error) {
+	service, err := a.core()
+	if err != nil {
+		return PlanViewData{}, err
+	}
+	plan, err := service.GetLatestPlan(a.ctx, taskID)
+	if err != nil {
+		return PlanViewData{}, err
+	}
+	snapshot, _ := service.GetTaskSnapshot(a.ctx, taskID)
+	stepStatus := make(map[string]string)
+	for _, step := range snapshot.Steps {
+		stepStatus[step.StepID] = string(step.Status)
+	}
+	steps := make([]PlanStepView, 0, len(plan.Steps))
+	for _, spec := range plan.Steps {
+		steps = append(steps, PlanStepView{
+			StepID:       spec.StepID,
+			Title:        spec.Title,
+			Goal:         spec.Goal,
+			Status:       stepStatus[spec.StepID],
+			Dependencies: spec.Dependencies,
+			AllowedTools: spec.AllowedTools,
+			Risk:         string(spec.Risk),
+		})
+	}
+	return PlanViewData{
+		PlanID:    plan.PlanID,
+		TaskID:    plan.TaskID,
+		Revision:  plan.Revision,
+		Summary:   plan.Summary,
+		Reason:    plan.Reason,
+		Steps:     steps,
+		CreatedAt: plan.CreatedAt,
+	}, nil
+}
