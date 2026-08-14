@@ -18,6 +18,16 @@ import type {
 import { clientLog, knownMode } from '../utils'
 
 const STORAGE_KEY = 'simplenessagent.selected-deployment-id'
+const STRATEGY_STORAGE_KEY = 'simplenessagent.execution-strategy'
+
+function storedExecutionStrategy(): ExecutionStrategy | null {
+  try {
+    const value = localStorage.getItem(STRATEGY_STORAGE_KEY)
+    return value === 'SINGLE_PLAN' || value === 'INCREMENTAL_HORIZON' ? value : null
+  } catch {
+    return null
+  }
+}
 
 export type AgentStatus = { status: string; message: string }
 
@@ -30,7 +40,9 @@ export const useAppStore = defineStore('app', () => {
   const workspaceID = ref('')
   const deploymentID = ref('')
   const permissionMode = ref<PermissionMode>('EDIT')
-  const executionStrategy = ref<ExecutionStrategy>('SINGLE_PLAN')
+  const restoredStrategy = storedExecutionStrategy()
+  const executionStrategy = ref<ExecutionStrategy>(restoredStrategy ?? 'SINGLE_PLAN')
+  let strategyInitialized = restoredStrategy !== null
   const prompt = ref('')
   const busy = ref(false)
   const error = ref('')
@@ -72,6 +84,13 @@ export const useAppStore = defineStore('app', () => {
   function fail(cause: unknown) { error.value = String(cause); notice.value = '' }
   function clearFeedback() { error.value = ''; notice.value = '' }
   function chooseDeployment(id: string) { deploymentID.value = id; capability.value = null; if (id) localStorage.setItem(STORAGE_KEY, id) }
+  function chooseExecutionStrategy(value: string) {
+    if (value !== 'SINGLE_PLAN' && value !== 'INCREMENTAL_HORIZON') return
+    executionStrategy.value = value
+    strategyInitialized = true
+    try { localStorage.setItem(STRATEGY_STORAGE_KEY, value) } catch { /* WebView storage can be unavailable in restricted profiles. */ }
+    enforceLongHorizonPermission()
+  }
   function selectWorkspace(id: string) { workspaceID.value = id; activePanel.value = 'chat'; clearFeedback() }
   function toggleWorkspace(id: string) { collapsed.value[id] = !collapsed.value[id] }
   function newConversation() { activeConversation.value = null; prompt.value = ''; clearFeedback(); activePanel.value = 'chat'; clientLog('info', '用户开始新会话', { workspace_id: workspaceID.value, permission_mode: permissionMode.value }) }
@@ -114,6 +133,10 @@ export const useAppStore = defineStore('app', () => {
       workspaces.value = ws as Workspace[]
       deployments.value = deps as Deployment[]
       conversations.value = convs as Conversation[]
+      if (!strategyInitialized && conversations.value.length) {
+        const previouslyUsedLongHorizon = conversations.value.some((conversation) => conversation.spec?.execution_strategy === 'INCREMENTAL_HORIZON')
+        chooseExecutionStrategy(previouslyUsedLongHorizon ? 'INCREMENTAL_HORIZON' : 'SINGLE_PLAN')
+      }
       if (!workspaceID.value && workspaces.value.length) workspaceID.value = workspaces.value[0].id
       if (!deployments.value.some((d) => d.deployment_id === deploymentID.value)) {
         const saved = localStorage.getItem(STORAGE_KEY) ?? ''
@@ -134,6 +157,18 @@ export const useAppStore = defineStore('app', () => {
       workspaceID.value = conversation.workspace_id
       const storedMode = knownMode(activeConversation.value.conversation.spec?.permission_profile_id)
       if (storedMode) permissionMode.value = storedMode
+      for (let index = activeConversation.value.turns.length - 1; index >= 0; index--) {
+        const turn = activeConversation.value.turns[index]
+        const turnStrategy = turn.snapshot.task.spec?.execution_strategy
+        if (turnStrategy === 'SINGLE_PLAN' || turnStrategy === 'INCREMENTAL_HORIZON') {
+          chooseExecutionStrategy(turnStrategy)
+          break
+        }
+        if (turn.snapshot.horizon) {
+          chooseExecutionStrategy('INCREMENTAL_HORIZON')
+          break
+        }
+      }
       activePanel.value = 'chat'; await scrollChat()
     } catch (cause) { clientLog('error', '打开会话失败', { conversation_id: conversation.id, error: String(cause) }); fail(cause) }
     finally { busy.value = false }
@@ -303,7 +338,7 @@ export const useAppStore = defineStore('app', () => {
     planViewerOpen, planViewerTaskID,
     selectedWorkspace, selectedDeployment, groupedConversations,
     isNewConversation, canSend, turnMap,
-    fail, clearFeedback, chooseDeployment, selectWorkspace, toggleWorkspace,
+    fail, clearFeedback, chooseDeployment, chooseExecutionStrategy, selectWorkspace, toggleWorkspace,
     newConversation, openSettings, turnFor, artifactCount, evidenceCount,
     reportSummary, reportTool, pendingWriteFor, pendingCommandFor,
     scrollChat, refresh, refreshDiagnosticLogs, openConversation, sendMessage,

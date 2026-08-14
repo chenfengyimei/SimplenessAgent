@@ -125,19 +125,19 @@ function openArtifacts(turn: Turn) {
             <option value="">不使用模型（确定性侦察）</option>
             <option v-for="item in store.deployments" :key="item.deployment_id" :value="item.deployment_id">{{ item.name }} · {{ item.model }}</option>
           </select>
-          <select v-model="store.permissionMode" :disabled="store.busy" :title="modeHint(store.permissionMode)">
+          <select v-model="store.permissionMode" :disabled="store.busy" :title="modeHint(store.permissionMode)" @change="store.enforceLongHorizonPermission">
             <option value="PLAN">计划模式（只读）</option>
             <option value="EDIT">编辑模式（需确认）</option>
             <option value="DEVELOPMENT">开发模式（直接执行）</option>
           </select>
-          <select v-model="store.executionStrategy" :disabled="store.busy || !store.deploymentID" @change="store.enforceLongHorizonPermission">
+          <select :value="store.executionStrategy" :disabled="store.busy || !store.deploymentID" @change="store.chooseExecutionStrategy(($event.target as HTMLSelectElement).value)">
             <option value="SINGLE_PLAN">单次计划</option>
             <option value="INCREMENTAL_HORIZON">长程 Agent</option>
           </select>
         </div>
         <button class="send-button" :disabled="!store.canSend" @click="store.sendMessage">发送 <span>↑</span></button>
       </div>
-      <small class="mode-note">{{ modeLabel(store.permissionMode) }}：{{ modeHint(store.permissionMode) }}</small>
+      <small class="mode-note">{{ store.executionStrategy === 'INCREMENTAL_HORIZON' ? '长程 Agent' : '单次计划' }} · {{ modeLabel(store.permissionMode) }}：{{ modeHint(store.permissionMode) }}</small>
     </div>
   </section>
 </template>

@@ -363,7 +363,7 @@ func (a *App) StartConversation(workspaceID, message, deploymentID, permissionMo
 	if err != nil {
 		return ConversationView{}, err
 	}
-	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: conversationAcceptance(deploymentID), AllowWriteProposals: mode == contracts.PermissionModeEdit, PermissionMode: mode})
+	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, DeploymentID: deploymentID, AcceptanceCriteria: conversationAcceptance(deploymentID), AllowWriteProposals: mode == contracts.PermissionModeEdit, PermissionMode: mode})
 	if err != nil {
 		a.logError("conversation", "create conversation failed", err, map[string]string{"workspace_id": workspaceID, "deployment_id": deploymentID})
 		return ConversationView{}, err
@@ -394,7 +394,7 @@ func (a *App) SendConversationMessage(conversationID, message, deploymentID, per
 	if err != nil {
 		return ConversationView{}, err
 	}
-	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: conversation.Task.WorkspaceID, Title: compactTitle(message), Goal: message, AcceptanceCriteria: conversationAcceptance(deploymentID), AllowWriteProposals: mode == contracts.PermissionModeEdit, PermissionMode: mode})
+	created, _, err := service.CreateTask(a.ctx, app.CreateTaskInput{WorkspaceID: conversation.Task.WorkspaceID, Title: compactTitle(message), Goal: message, DeploymentID: deploymentID, AcceptanceCriteria: conversationAcceptance(deploymentID), AllowWriteProposals: mode == contracts.PermissionModeEdit, PermissionMode: mode})
 	if err != nil {
 		a.logError("conversation", "create conversation turn failed", err, map[string]string{"conversation_id": conversationID, "deployment_id": deploymentID})
 		return ConversationView{}, err
@@ -529,7 +529,7 @@ func (a *App) advanceLongConversation(service *app.Service, taskID, conversation
 		a.logError("long-horizon", "cycle failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": taskID})
 		return LongConversationCycle{}, err
 	}
-	runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": strings.ToLower(string(cycle.Status)), "message": fmt.Sprintf("长程 Agent：%s · %s", cycle.Stage, cycle.Action)})
+	a.emitAgentStatus(map[string]interface{}{"conversation_id": conversationID, "status": strings.ToLower(string(cycle.Status)), "message": fmt.Sprintf("长程 Agent：%s · %s", cycle.Stage, cycle.Action)})
 	if cycle.Status != contracts.HorizonActive || cycle.AwaitingCheckpoint {
 		message := fmt.Sprintf("长程任务已执行到 %s 阶段：%s。已规划 %d 步，完成 %d 步。", cycle.Stage, cycle.Action, cycle.StepsPlanned, cycle.StepsCompleted)
 		if cycle.CheckpointReason != "" {
@@ -555,11 +555,11 @@ func desktopPermissionMode(value string) (contracts.PermissionMode, error) {
 
 func (a *App) executeConversationTurn(service *app.Service, created contracts.Task, conversationID, deploymentID string) (ConversationView, error) {
 	a.logInfo("agent", "turn execution started", map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "deployment_id": deploymentID})
-	runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": "thinking", "message": "Agent 正在理解需求并分析上下文…"})
+	a.emitAgentStatus(map[string]interface{}{"conversation_id": conversationID, "status": "thinking", "message": "Agent 正在理解需求并分析上下文…"})
 	var snapshot app.TaskSnapshot
 	var err error
 	if strings.TrimSpace(deploymentID) == "" {
-		runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": "recon", "message": "正在侦察工作区…"})
+		a.emitAgentStatus(map[string]interface{}{"conversation_id": conversationID, "status": "recon", "message": "正在侦察工作区…"})
 		snapshot, err = service.RunTask(a.ctx, created.ID)
 	} else {
 		sections, contextErr := service.ConversationContextSections(a.ctx, created.ID, conversationID, created.Goal)
@@ -568,12 +568,12 @@ func (a *App) executeConversationTurn(service *app.Service, created contracts.Ta
 			return ConversationView{}, contextErr
 		}
 		a.logInfo("agent", "conversation context assembled", map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "sections": fmt.Sprint(len(sections))})
-		runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": "model", "message": "正在调用模型生成执行计划…"})
+		a.emitAgentStatus(map[string]interface{}{"conversation_id": conversationID, "status": "model", "message": "正在调用模型生成执行计划…"})
 		snapshot, err = service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: created.ID, DeploymentID: deploymentID, ContextSections: sections})
 	}
 	if err != nil {
 		a.logError("agent", "turn execution failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "deployment_id": deploymentID})
-		runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": "error", "message": "本轮执行失败"})
+		a.emitAgentStatus(map[string]interface{}{"conversation_id": conversationID, "status": "error", "message": "本轮执行失败"})
 		response := "本轮 Agent 执行失败：" + userFacingError(err) + "。详细诊断已保存到“模型与设置 → 运行诊断”。"
 		if saveErr := service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: created.ID, Role: "assistant", Content: response}); saveErr != nil {
 			return ConversationView{}, saveErr
@@ -593,8 +593,17 @@ func (a *App) executeConversationTurn(service *app.Service, created contracts.Ta
 		return ConversationView{}, err
 	}
 	a.logInfo("agent", "turn execution completed", map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "status": string(snapshot.Task.Status)})
-	runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": "completed", "message": "本轮执行完成"})
+	a.emitAgentStatus(map[string]interface{}{"conversation_id": conversationID, "status": "completed", "message": "本轮执行完成"})
 	return a.GetConversation(conversationID)
+}
+
+func (a *App) emitAgentStatus(payload map[string]interface{}) {
+	// Wails runtime helpers terminate the process when called without the
+	// lifecycle context. Core/desktop tests intentionally use a plain context.
+	if a.ctx == nil || a.ctx.Value("events") == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, "agent:status", payload)
 }
 
 func conversationAcceptance(deploymentID string) []contracts.AcceptanceCriterion {

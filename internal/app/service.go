@@ -1898,6 +1898,9 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 		}
 		return s.CheckpointTask(ctx, item.ID)
 	}
+	if runErr == nil && item.Spec.ExecutionStrategy == contracts.ExecutionStrategySinglePlan && permissionMode != contracts.PermissionModePlan && goalRequiresWorkspaceAction(item.Goal) && pending == nil && pendingCommand == nil && !hasSuccessfulDirectAction(result, directIntentIDs) {
+		runErr = contracts.NewError(contracts.ErrPlanInvalid, "single-plan execution ended after reconnaissance without proposing or performing the requested workspace action; use long-horizon mode for multi-step project construction")
+	}
 	if (pending != nil || pendingCommand != nil) && runErr == nil {
 		runErr = contracts.NewError(contracts.ErrApprovalRequired, "a requested operation is waiting for user approval")
 	}
@@ -1939,6 +1942,42 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 		return TaskSnapshot{}, err
 	}
 	return s.completeModelStep(ctx, item, planVersion, step.StepID)
+}
+
+func hasSuccessfulDirectAction(result worker.Result, directIntentIDs map[string]bool) bool {
+	for _, toolResult := range result.ToolResults {
+		if directIntentIDs[toolResult.ToolCallID] && toolResult.Status == "SUCCEEDED" {
+			return true
+		}
+	}
+	return false
+}
+
+func goalRequiresWorkspaceAction(goal string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(goal))
+	if normalized == "" {
+		return false
+	}
+	for _, advisory := range []string{"如何", "怎么", "怎样", "告诉我", "解释", "说明一下", "给出建议", "how to", "explain", "tell me", "recommend"} {
+		if strings.Contains(normalized, advisory) {
+			return false
+		}
+	}
+	for _, phrase := range []string{"帮我做", "帮我实现", "请实现", "请开发", "开发一个", "创建一个", "做一个", "制作一个", "写一个", "搭建", "新建", "新增", "添加", "修改", "改成", "替换", "修复", "重构", "删除", "运行", "执行"} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	words := strings.FieldsFunc(normalized, func(char rune) bool {
+		return !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '_')
+	})
+	for _, word := range words {
+		switch word {
+		case "build", "create", "develop", "implement", "write", "add", "modify", "update", "replace", "fix", "refactor", "delete", "remove", "run", "execute":
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) completeModelStep(ctx context.Context, item contracts.Task, planVersion contracts.PlanVersion, stepID string) (TaskSnapshot, error) {

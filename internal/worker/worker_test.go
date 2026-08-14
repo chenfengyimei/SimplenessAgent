@@ -231,6 +231,32 @@ func TestRunPrevalidatesEntireToolBatchBeforeInvocation(t *testing.T) {
 	}
 }
 
+func TestRunRepairsRepeatedReadWithoutReplayingIt(t *testing.T) {
+	repeated := contracts.ChatResponse{ToolCalls: []contracts.ToolCall{{ID: "read-again", Name: "lookup", ArgumentsJSON: `{"query":"same"}`}}}
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{
+		{ToolCalls: []contracts.ToolCall{{ID: "read-once", Name: "lookup", ArgumentsJSON: `{"query":"same"}`}}},
+		repeated,
+		{Text: "Used the existing read evidence."},
+	}, rejectOrphanToolCalls: true}
+	invocations := 0
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		invocations++
+		return contracts.ToolResult{Status: "SUCCEEDED", Summary: "existing evidence"}, nil
+	})
+	executor, _ := New(provider, registry)
+	result, err := executor.Run(context.Background(), Input{Step: testStep(3), MaxToolCallsPerResponse: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "Used the existing read evidence." || invocations != 1 || len(result.ToolResults) != 1 || result.Iterations != 3 {
+		t.Fatalf("repeated read was replayed or not repaired: result=%#v invocations=%d", result, invocations)
+	}
+	repair := provider.requests[2].Messages[len(provider.requests[2].Messages)-1]
+	if repair.Role != "user" || !strings.Contains(repair.Content, "earlier tool result is already present") {
+		t.Fatalf("repeated read repair did not point to existing evidence: %#v", repair)
+	}
+}
+
 func TestRunStopsAtBudgetAndRejectsWriteTools(t *testing.T) {
 	provider := &scriptedProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{"query":"one"}`}}}}}
 	registry := testRegistry(t, contracts.RiskWrite, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {

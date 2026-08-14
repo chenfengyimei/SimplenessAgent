@@ -7,7 +7,7 @@ export type Deployment = { deployment_id: string; name: string; endpoint: string
 
 export type Capability = { supports_tools: boolean; supports_streaming: boolean; reliable_context_tokens: number }
 
-export type Conversation = { id: string; workspace_id: string; title: string; goal: string; status: string; updated_at: string; spec?: { permission_profile_id?: string } }
+export type Conversation = { id: string; workspace_id: string; title: string; goal: string; status: string; updated_at: string; spec?: { permission_profile_id?: string; execution_strategy?: ExecutionStrategy; deployment_id?: string } }
 
 export type Message = { message_id: string; conversation_id: string; turn_task_id?: string; role: 'user' | 'assistant'; content: string; created_at: string }
 
@@ -28,7 +28,7 @@ export type Horizon = {
   usage: { input_tokens: number; output_tokens: number }
 }
 
-export type Snapshot = { task: { id: string; title: string; goal: string; status: string }; steps: Step[]; events: EventEntry[]; horizon?: Horizon }
+export type Snapshot = { task: { id: string; title: string; goal: string; status: string; spec?: { execution_strategy?: ExecutionStrategy } }; steps: Step[]; events: EventEntry[]; horizon?: Horizon }
 
 export type PendingWrite = { task_id: string; step_id: string; path: string; content: string }
 

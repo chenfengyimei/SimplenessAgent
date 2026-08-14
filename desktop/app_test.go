@@ -148,6 +148,9 @@ func TestConversationRunsModelToolLoopAndReturnsModelReply(t *testing.T) {
 	if len(conversation.Turns) != 1 || conversation.Turns[0].Snapshot.Task.Status != contracts.TaskCompleted || conversation.Turns[0].Report.ToolName != "列出文件" {
 		t.Fatalf("expected completed model turn with tool report: %#v", conversation.Turns)
 	}
+	if conversation.Conversation.Spec.DeploymentID != deployment.ID || conversation.Conversation.Spec.ExecutionStrategy != contracts.ExecutionStrategySinglePlan {
+		t.Fatalf("conversation did not persist its deployment and strategy: %#v", conversation.Conversation.Spec)
+	}
 }
 
 func TestConversationShowsApprovalGatedWriteProposal(t *testing.T) {

@@ -139,12 +139,12 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 			toolCallLimit = maxToolCallsPerResponse
 		}
 		validatedCalls, validationError := w.validateToolCalls(response.ToolCalls, allowed, seen, toolCallLimit)
-		if validationError != nil && !repairAttempted && iteration+1 < input.Step.Budget.MaxIterations && repairableToolCallError(validationError) {
+		if validationError != nil && !repairAttempted && iteration+1 < input.Step.Budget.MaxIterations && repairableToolCallError(validationError, response.ToolCalls, allowed) {
 			// Never replay a rejected assistant.tool_calls message. OpenAI-compatible
 			// APIs require every such message to be followed immediately by one tool
 			// response per tool_call_id; a controller repair instruction is not a tool
 			// response and would make the next provider request invalid.
-			messages = append(messages, contracts.Message{Role: "user", Content: "The controller rejected your previous tool request before executing any tool: " + validationError.Error() + ". Fix it and retry. Request no more than the configured number of tools, and ensure every tool argument is valid JSON matching its parameter schema."})
+			messages = append(messages, contracts.Message{Role: "user", Content: toolCallRepairInstruction(validationError)})
 			repairAttempted = true
 			continue
 		}
@@ -214,12 +214,41 @@ func (w *Worker) validateToolCalls(calls []contracts.ToolCall, allowed []contrac
 	return validated, nil
 }
 
-func repairableToolCallError(err error) bool {
+func repairableToolCallError(err error, calls []contracts.ToolCall, allowed []contracts.ToolDefinition) bool {
 	var domain *contracts.Error
 	if !errors.As(err, &domain) {
 		return false
 	}
-	return domain.Code == contracts.ErrInvalidToolCall || domain.Code == contracts.ErrToolNotAllowed
+	if domain.Code == contracts.ErrInvalidToolCall || domain.Code == contracts.ErrToolNotAllowed {
+		return true
+	}
+	if domain.Code != contracts.ErrRepeatedAction || len(calls) == 0 {
+		return false
+	}
+	for _, call := range calls {
+		definition, found := toolDefinition(allowed, call.Name)
+		if !found || definition.RiskClass != contracts.RiskRead {
+			return false
+		}
+	}
+	return true
+}
+
+func toolCallRepairInstruction(err error) string {
+	var domain *contracts.Error
+	if errors.As(err, &domain) && domain.Code == contracts.ErrRepeatedAction {
+		return "The controller did not execute your repeated read request: " + err.Error() + ". Its earlier tool result is already present in the conversation. Use that existing evidence and either request a different necessary read or return your evidence-based response."
+	}
+	return "The controller rejected your previous tool request before executing any tool: " + err.Error() + ". Fix it and retry. Request no more than the configured number of tools, and ensure every tool argument is valid JSON matching its parameter schema."
+}
+
+func toolDefinition(definitions []contracts.ToolDefinition, name string) (contracts.ToolDefinition, bool) {
+	for _, definition := range definitions {
+		if definition.Name == name {
+			return definition, true
+		}
+	}
+	return contracts.ToolDefinition{}, false
 }
 
 func recompileAtSoftLimit(ctx context.Context, provider contracts.ChatProvider, deploymentID string, messages []contracts.Message, tools []contracts.ToolDefinition, window int) ([]contracts.Message, bool) {
