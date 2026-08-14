@@ -21,6 +21,8 @@ export function GeneratePlan(arg1:string,arg2:string):Promise<contracts.PlanVers
 
 export function GetConversation(arg1:string):Promise<main.ConversationView>;
 
+export function GetTaskPlan(arg1:string):Promise<main.PlanViewData>;
+
 export function GetTaskSnapshot(arg1:string):Promise<app.TaskSnapshot>;
 
 export function ListConversations():Promise<Array<contracts.Task>>;
@@ -29,11 +31,15 @@ export function ListDeployments():Promise<Array<contracts.Deployment>>;
 
 export function ListDiagnosticLogs(arg1:number):Promise<Array<diagnostics.Entry>>;
 
+export function ListTaskArtifacts(arg1:string):Promise<Array<contracts.Artifact>>;
+
 export function ListTasks():Promise<Array<app.TaskSnapshot>>;
 
 export function ListWorkspaces():Promise<Array<contracts.Workspace>>;
 
 export function ProbeDeployment(arg1:string):Promise<contracts.CapabilitySnapshot>;
+
+export function ReadTaskArtifact(arg1:string,arg2:string):Promise<string>;
 
 export function RecordClientLog(arg1:string,arg2:string,arg3:Record<string, string>):Promise<void>;
 

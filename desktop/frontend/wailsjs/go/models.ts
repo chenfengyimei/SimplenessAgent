@@ -133,6 +133,61 @@ export namespace contracts {
 	        this.spec = source["spec"];
 	    }
 	}
+	export class Artifact {
+	    artifact_id: string;
+	    version: number;
+	    kind: string;
+	    media_type: string;
+	    storage_uri: string;
+	    content_hash: string;
+	    size_bytes: number;
+	    summary: string;
+	    workspace_relative_path?: string;
+	    task_id?: string;
+	    step_id?: string;
+	    verified: boolean;
+	    // Go type: time
+	    created_at: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new Artifact(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.artifact_id = source["artifact_id"];
+	        this.version = source["version"];
+	        this.kind = source["kind"];
+	        this.media_type = source["media_type"];
+	        this.storage_uri = source["storage_uri"];
+	        this.content_hash = source["content_hash"];
+	        this.size_bytes = source["size_bytes"];
+	        this.summary = source["summary"];
+	        this.workspace_relative_path = source["workspace_relative_path"];
+	        this.task_id = source["task_id"];
+	        this.step_id = source["step_id"];
+	        this.verified = source["verified"];
+	        this.created_at = this.convertValues(source["created_at"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class CapabilitySnapshot {
 	    capability_snapshot_id?: string;
 	    deployment_id?: string;
@@ -823,6 +878,73 @@ export namespace main {
 	        this.conversation = this.convertValues(source["conversation"], contracts.Task);
 	        this.messages = this.convertValues(source["messages"], contracts.ConversationMessage);
 	        this.turns = this.convertValues(source["turns"], ConversationTurn);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PlanStepView {
+	    step_id: string;
+	    title: string;
+	    goal: string;
+	    status: string;
+	    dependencies: string[];
+	    allowed_tools: string[];
+	    risk: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PlanStepView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.step_id = source["step_id"];
+	        this.title = source["title"];
+	        this.goal = source["goal"];
+	        this.status = source["status"];
+	        this.dependencies = source["dependencies"];
+	        this.allowed_tools = source["allowed_tools"];
+	        this.risk = source["risk"];
+	    }
+	}
+	export class PlanViewData {
+	    plan_id: string;
+	    task_id: string;
+	    revision: number;
+	    summary: string;
+	    reason: string;
+	    steps: PlanStepView[];
+	    // Go type: time
+	    created_at: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new PlanViewData(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.plan_id = source["plan_id"];
+	        this.task_id = source["task_id"];
+	        this.revision = source["revision"];
+	        this.summary = source["summary"];
+	        this.reason = source["reason"];
+	        this.steps = this.convertValues(source["steps"], PlanStepView);
+	        this.created_at = this.convertValues(source["created_at"], null);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

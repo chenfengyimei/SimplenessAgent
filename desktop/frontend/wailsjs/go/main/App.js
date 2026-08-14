@@ -34,6 +34,10 @@ export function GetConversation(arg1) {
   return window['go']['main']['App']['GetConversation'](arg1);
 }
 
+export function GetTaskPlan(arg1) {
+  return window['go']['main']['App']['GetTaskPlan'](arg1);
+}
+
 export function GetTaskSnapshot(arg1) {
   return window['go']['main']['App']['GetTaskSnapshot'](arg1);
 }
@@ -50,6 +54,10 @@ export function ListDiagnosticLogs(arg1) {
   return window['go']['main']['App']['ListDiagnosticLogs'](arg1);
 }
 
+export function ListTaskArtifacts(arg1) {
+  return window['go']['main']['App']['ListTaskArtifacts'](arg1);
+}
+
 export function ListTasks() {
   return window['go']['main']['App']['ListTasks']();
 }
@@ -60,6 +68,10 @@ export function ListWorkspaces() {
 
 export function ProbeDeployment(arg1) {
   return window['go']['main']['App']['ProbeDeployment'](arg1);
+}
+
+export function ReadTaskArtifact(arg1, arg2) {
+  return window['go']['main']['App']['ReadTaskArtifact'](arg1, arg2);
 }
 
 export function RecordClientLog(arg1, arg2, arg3) {
