@@ -60,7 +60,7 @@ function openArtifacts(turn: Turn) {
               <p v-if="store.turnFor(message)?.snapshot?.steps?.find(step => ['PENDING', 'READY', 'RUNNING'].includes(step.status))">当前步骤：{{ store.turnFor(message)?.snapshot?.steps?.find(step => ['PENDING', 'READY', 'RUNNING'].includes(step.status))?.title }}</p>
               <p v-if="store.turnFor(message)?.snapshot?.horizon?.checkpoint_reason">{{ store.turnFor(message)?.snapshot?.horizon?.checkpoint_reason }}</p>
               <div class="horizon-actions">
-                <button v-if="store.turnFor(message)?.snapshot?.horizon?.awaiting_checkpoint" class="primary-button" :disabled="store.busy" @click="store.resumeLongHorizon(store.turnFor(message)?.snapshot.task.id ?? '')">确认并继续下一阶段</button>
+                <button v-if="store.turnFor(message)?.snapshot?.horizon?.awaiting_checkpoint || store.turnFor(message)?.snapshot?.task?.status === 'PAUSED'" class="primary-button" :disabled="store.busy" @click="store.resumeLongHorizon(store.turnFor(message)?.snapshot.task.id ?? '')">{{ store.turnFor(message)?.snapshot?.horizon?.awaiting_checkpoint ? '确认并继续下一阶段' : '恢复任务并局部重规划' }}</button>
                 <button v-if="!['COMPLETED', 'CANCELLED', 'BLOCKED'].includes(store.turnFor(message)?.snapshot?.horizon?.status ?? '')" class="secondary-button" :disabled="store.busy" @click="store.cancelLongHorizon(store.turnFor(message)?.snapshot.task.id ?? '')">取消任务</button>
               </div>
             </section>

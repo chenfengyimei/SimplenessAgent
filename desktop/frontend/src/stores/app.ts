@@ -223,7 +223,7 @@ export const useAppStore = defineStore('app', () => {
       busy.value = true; clearFeedback()
       const first = await window.go.main.App.ResumeLongConversation(taskID) as LongConversationCycle
       activeConversation.value = await runLongCycles(first)
-      notice.value = '长程任务已从阶段检查点继续。'
+      notice.value = '长程任务已恢复执行。'
       await refresh()
     } catch (cause) { fail(cause) }
     finally { busy.value = false; agentStatus.value = null; await scrollChat() }
