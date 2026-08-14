@@ -14,6 +14,8 @@ import { clientLog, knownMode } from '../utils'
 
 const STORAGE_KEY = 'simplenessagent.selected-deployment-id'
 
+export type AgentStatus = { status: string; message: string }
+
 export const useAppStore = defineStore('app', () => {
   const workspaces = ref<Workspace[]>([])
   const deployments = ref<Deployment[]>([])
@@ -39,6 +41,7 @@ export const useAppStore = defineStore('app', () => {
   const providerTemplate = ref<'local' | 'deepseek' | 'custom'>('local')
   const capability = ref<Capability | null>(null)
   const diagnosticLogs = ref<DiagnosticEntry[]>([])
+  const agentStatus = ref<AgentStatus | null>(null)
 
   // Artifact viewer state
   const artifactViewerOpen = ref(false)
@@ -207,12 +210,23 @@ export const useAppStore = defineStore('app', () => {
 
   function closePlanViewer() { planViewerOpen.value = false; planViewerTaskID.value = '' }
 
+  function setupAgentStatusListener() {
+    if (typeof window !== 'undefined' && (window as any).runtime) {
+      (window as any).runtime.EventsOn('agent:status', (data: AgentStatus) => {
+        agentStatus.value = data
+        if (data.status === 'completed' || data.status === 'error') {
+          setTimeout(() => { agentStatus.value = null }, 3000)
+        }
+      })
+    }
+  }
+
   return {
     workspaces, deployments, conversations, activeConversation, activePanel,
     workspaceID, deploymentID, permissionMode, prompt, busy, error, notice,
     collapsed, chatBodyEl, showWorkspaceForm, workspaceName, workspacePath,
     deploymentName, deploymentEndpoint, deploymentModel, apiKey, providerTemplate,
-    capability, diagnosticLogs,
+    capability, diagnosticLogs, agentStatus,
     artifactViewerOpen, artifactViewerArtifact, artifactViewerContent,
     planViewerOpen, planViewerTaskID,
     selectedWorkspace, selectedDeployment, groupedConversations,
@@ -223,6 +237,6 @@ export const useAppStore = defineStore('app', () => {
     scrollChat, refresh, refreshDiagnosticLogs, openConversation, sendMessage,
     approveWrite, approveCommand, applyProviderTemplate, configureModel,
     probeModel, createWorkspace, viewArtifact, closeArtifactViewer,
-    viewPlan, closePlanViewer,
+    viewPlan, closePlanViewer, setupAgentStatusListener,
   }
 })

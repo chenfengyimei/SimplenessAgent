@@ -82,7 +82,10 @@ function openArtifacts(turn: Turn) {
         </div>
       </article>
 
-      <div v-if="store.busy" class="thinking"><i></i><i></i><i></i> Agent 正在处理本轮请求…</div>
+      <div v-if="store.busy" class="thinking">
+        <i></i><i></i><i></i>
+        {{ store.agentStatus?.message || 'Agent 正在处理本轮请求…' }}
+      </div>
     </div>
 
     <div class="composer">

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"github.com/xm/simplenessagent/internal/app"
 	"github.com/xm/simplenessagent/internal/diagnostics"
 	"github.com/xm/simplenessagent/internal/provider/openai"
@@ -402,9 +403,11 @@ func desktopPermissionMode(value string) (contracts.PermissionMode, error) {
 
 func (a *App) executeConversationTurn(service *app.Service, created contracts.Task, conversationID, deploymentID string) (ConversationView, error) {
 	a.logInfo("agent", "turn execution started", map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "deployment_id": deploymentID})
+	runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": "thinking", "message": "Agent 正在理解需求并分析上下文…"})
 	var snapshot app.TaskSnapshot
 	var err error
 	if strings.TrimSpace(deploymentID) == "" {
+		runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": "recon", "message": "正在侦察工作区…"})
 		snapshot, err = service.RunTask(a.ctx, created.ID)
 	} else {
 		sections, contextErr := service.ConversationContextSections(a.ctx, created.ID, conversationID, created.Goal)
@@ -413,10 +416,12 @@ func (a *App) executeConversationTurn(service *app.Service, created contracts.Ta
 			return ConversationView{}, contextErr
 		}
 		a.logInfo("agent", "conversation context assembled", map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "sections": fmt.Sprint(len(sections))})
+		runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": "model", "message": "正在调用模型生成执行计划…"})
 		snapshot, err = service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: created.ID, DeploymentID: deploymentID, ContextSections: sections})
 	}
 	if err != nil {
-		a.logError("agent", "turn execution failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "deployment_id": deploymentID})
+		a.logError("agent", "turn execution failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, 		"deployment_id": deploymentID})
+		runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": "error", "message": "本轮执行失败"})
 		response := "本轮 Agent 执行失败：" + userFacingError(err) + "。详细诊断已保存到“模型与设置 → 运行诊断”。"
 		if saveErr := service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: created.ID, Role: "assistant", Content: response}); saveErr != nil {
 			return ConversationView{}, saveErr
@@ -436,6 +441,7 @@ func (a *App) executeConversationTurn(service *app.Service, created contracts.Ta
 		return ConversationView{}, err
 	}
 	a.logInfo("agent", "turn execution completed", map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "status": string(snapshot.Task.Status)})
+	runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": "completed", "message": "本轮执行完成"})
 	return a.GetConversation(conversationID)
 }
 

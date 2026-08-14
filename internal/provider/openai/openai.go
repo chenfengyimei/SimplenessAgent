@@ -18,7 +18,7 @@ import (
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
 
-const defaultTimeout = 60 * time.Second
+const defaultTimeout = 180 * time.Second
 
 // Config identifies one configured deployment. APIKey is only used to form an
 // Authorization header and is never included in returned errors.
@@ -79,7 +79,10 @@ func (p *Provider) Chat(ctx context.Context, request contracts.ChatRequest) (con
 	}
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, 8*1024*1024))
 	if err != nil {
-		return contracts.ChatResponse{}, contracts.NewError(contracts.ErrInvalidResponse, "provider response could not be read")
+		if classified := classifyReadError(ctx, err); classified != nil {
+			return contracts.ChatResponse{}, classified
+		}
+		return contracts.ChatResponse{}, contracts.NewError(contracts.ErrInvalidResponse, "provider response could not be read: "+err.Error())
 	}
 	var payload chatCompletion
 	if err := json.Unmarshal(encoded, &payload); err != nil {

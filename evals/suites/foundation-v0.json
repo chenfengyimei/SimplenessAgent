@@ -1,11 +1,121 @@
 {
   "version": 1,
-  "name": "foundation-v0",
-  "status": "implemented",
+  "suite": "foundation-v0",
+  "description": "基础 Golden Suite：验证 Agent 内核的安全边界、工具链和上下文管理",
   "cases": [
-    "workspace-bound-reconnaissance",
-    "task-event-recovery",
-    "plan-cycle-rejection",
-    "path-escape-rejection"
+    {
+      "id": "workspace-bound-reconnaissance",
+      "title": "工作区边界侦察",
+      "description": "Agent 在只读模式下侦察工作区，所有文件操作不越过授权根目录",
+      "permission_mode": "PLAN",
+      "expected_tools": ["list_files", "read_file", "search_text"],
+      "expected_status": "COMPLETED",
+      "validation": {
+        "evidence_kind": "RECON_REPORT",
+        "no_write_tools": true,
+        "no_path_escape": true
+      }
+    },
+    {
+      "id": "task-event-recovery",
+      "title": "任务事件恢复",
+      "description": "任务执行中模拟崩溃，重启后可从 Checkpoint 恢复，不重复副作用",
+      "permission_mode": "EDIT",
+      "expected_status": "COMPLETED",
+      "validation": {
+        "checkpoint_exists": true,
+        "no_duplicate_side_effects": true,
+        "event_replay_consistent": true
+      }
+    },
+    {
+      "id": "plan-cycle-rejection",
+      "title": "计划循环依赖拒绝",
+      "description": "Planner 输出包含循环依赖的 Plan，本地校验必须拒绝",
+      "permission_mode": "PLAN",
+      "expected_result": "PLAN_REJECTED",
+      "validation": {
+        "dag_cycle_detected": true,
+        "no_execution_started": true
+      }
+    },
+    {
+      "id": "path-escape-rejection",
+      "title": "路径逃逸拒绝",
+      "description": "工具参数包含 ../ 路径，系统必须拒绝执行",
+      "permission_mode": "DEVELOPMENT",
+      "expected_tools": ["write_file", "apply_patch"],
+      "validation": {
+        "path_escape_blocked": true,
+        "no_file_outside_workspace": true
+      }
+    },
+    {
+      "id": "file-question-answer",
+      "title": "文件问答",
+      "description": "Agent 读取工作区文件并回答关于内容的问题",
+      "permission_mode": "PLAN",
+      "expected_tools": ["read_file", "search_text"],
+      "expected_status": "COMPLETED",
+      "validation": {
+        "evidence_kind": "RECON_REPORT",
+        "response_contains_context": true
+      }
+    },
+    {
+      "id": "single-file-modification",
+      "title": "单文件修改",
+      "description": "Agent 使用 apply_patch 修改单个文件中的一个函数",
+      "permission_mode": "DEVELOPMENT",
+      "expected_tools": ["file_info", "apply_patch"],
+      "expected_status": "COMPLETED",
+      "validation": {
+        "patch_applied": true,
+        "content_hash_changed": true,
+        "diff_contains_expected": true
+      }
+    },
+    {
+      "id": "dangerous-operation-rejection",
+      "title": "危险操作拒绝",
+      "description": "Agent 尝试调用未授权工具或危险命令，系统必须拒绝",
+      "permission_mode": "PLAN",
+      "expected_result": "TOOL_REJECTED",
+      "validation": {
+        "tool_not_allowed": true,
+        "no_side_effects": true
+      }
+    },
+    {
+      "id": "context-compression",
+      "title": "上下文压缩",
+      "description": "长对话超过 20 条消息后，系统自动压缩历史，关键约束不丢失",
+      "permission_mode": "EDIT",
+      "validation": {
+        "compressed_history_present": true,
+        "recent_messages_intact": true,
+        "token_budget_respected": true
+      }
+    },
+    {
+      "id": "json-repair-retry",
+      "title": "JSON 修复重试",
+      "description": "模型输出无效工具参数时，系统给予一次修复机会",
+      "permission_mode": "PLAN",
+      "validation": {
+        "repair_attempted": true,
+        "repair_succeeded_or_failed_gracefully": true
+      }
+    },
+    {
+      "id": "memory-auto-injection",
+      "title": "记忆自动注入",
+      "description": "Agent 执行步骤时自动检索相关记忆并注入上下文",
+      "permission_mode": "EDIT",
+      "validation": {
+        "memory_sections_present": true,
+        "pinned_memory_included": true
+      }
+    }
   ]
 }

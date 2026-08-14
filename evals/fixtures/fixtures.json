@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "description": "测试夹具：供 Golden Suite 使用的固定输入和预期输出",
+  "fixtures": [
+    {
+      "id": "simple-go-project",
+      "description": "一个最简 Go 项目，包含 main.go 和 go.mod",
+      "files": {
+        "go.mod": "module example.com/test\n\ngo 1.21\n",
+        "main.go": "package main\n\nimport \"fmt\"\n\nfunc greet(name string) string {\n\treturn \"Hello, \" + name\n}\n\nfunc main() {\n\tfmt.Println(greet(\"World\"))\n}\n"
+      },
+      "expected_analysis": {
+        "language": "Go",
+        "has_tests": false,
+        "entry_point": "main.go"
+      }
+    },
+    {
+      "id": "path-escape-attempt",
+      "description": "包含路径逃逸尝试的工具参数",
+      "tool_call": {
+        "name": "write_file",
+        "arguments": {
+          "path": "../../../etc/passwd",
+          "content": "malicious",
+          "expected_content_hash": "sha256:0000"
+        },
+      },
+      "expected_result": "PATH_ESCAPE_REJECTED"
+    },
+    {
+      "id": "cyclic-plan",
+      "description": "包含循环依赖的 Plan",
+      "plan": {
+        "steps": [
+          {"step_id": "a", "dependencies": ["b"]},
+          {"step_id": "b", "dependencies": ["a"]}
+        ]
+      },
+      "expected_result": "CYCLE_DETECTED"
+    },
+    {
+      "id": "unified-diff-patch",
+      "description": "标准 unified diff 补丁",
+      "original": "line1\nline2\nline3",
+      "patch": "--- a/test.txt\n+++ b/test.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+line2 modified\n line3",
+      "expected_result": "line1\nline2 modified\nline3"
+    }
+  ]
+}
