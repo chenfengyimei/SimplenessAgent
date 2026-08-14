@@ -133,7 +133,7 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 				return result, cancelledOrTimedOut(err)
 			}
 			result.ToolResults = append(result.ToolResults, toolResult)
-			if toolResult.Status == "WAITING_APPROVAL" {
+			if toolResult.Status == "WAITING_APPROVAL" || toolResult.Status == "WAITING_USER" {
 				return result, nil
 			}
 			encodedResult, err := json.Marshal(toolResult)

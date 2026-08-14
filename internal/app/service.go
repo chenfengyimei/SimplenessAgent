@@ -1813,6 +1813,25 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 			}
 		}
 	}
+	hasWaitingUser := false
+	for _, toolResult := range result.ToolResults {
+		if toolResult.Status == "WAITING_USER" {
+			hasWaitingUser = true
+			break
+		}
+	}
+	if hasWaitingUser && runErr == nil {
+		if err = s.persistAgentReport(ctx, item, step.StepID, result); err != nil {
+			return TaskSnapshot{}, err
+		}
+		if err = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepRunning, contracts.StepWaitingUser, "STEP_STATUS_CHANGED"); err != nil {
+			return TaskSnapshot{}, err
+		}
+		if err = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskWaitingUser, "TASK_STATUS_CHANGED"); err != nil {
+			return TaskSnapshot{}, err
+		}
+		return s.CheckpointTask(ctx, item.ID)
+	}
 	if (pending != nil || pendingCommand != nil) && runErr == nil {
 		runErr = contracts.NewError(contracts.ErrApprovalRequired, "a requested operation is waiting for user approval")
 	}
