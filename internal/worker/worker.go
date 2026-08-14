@@ -29,12 +29,13 @@ type Worker struct {
 }
 
 type Input struct {
-	DeploymentID   string
-	Step           contracts.StepSpec
-	PermissionMode contracts.PermissionMode
-	Context        string
-	ContextPackage *contracts.ContextPackage
-	Skills         []contracts.Skill
+	DeploymentID    string
+	Step            contracts.StepSpec
+	PermissionMode  contracts.PermissionMode
+	Context         string
+	ContextPackage  *contracts.ContextPackage
+	Skills          []contracts.Skill
+	EffectiveBudget *contracts.StepBudget
 }
 
 type Result struct {
@@ -92,7 +93,11 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		result.Iterations++
 		result.Usage.InputTokens += response.Usage.InputTokens
 		result.Usage.OutputTokens += response.Usage.OutputTokens
-		if exceeded(input.Step.Budget, result.Usage) {
+		budget := input.Step.Budget
+		if input.EffectiveBudget != nil {
+			budget = *input.EffectiveBudget
+		}
+		if exceeded(budget, result.Usage) {
 			return result, contracts.NewError(contracts.ErrBudgetExceeded, "model token budget exceeded")
 		}
 		if len(response.ToolCalls) == 0 {

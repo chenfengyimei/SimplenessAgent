@@ -1753,6 +1753,34 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	}); err != nil {
 		return TaskSnapshot{}, err
 	}
+	const maxContextBudget = 131072
+	const maxOutputBudget = 32768
+	effectiveBudget := &contracts.StepBudget{MaxInputTokens: step.Budget.MaxInputTokens, MaxOutputTokens: step.Budget.MaxOutputTokens, MaxIterations: step.Budget.MaxIterations, MaxDurationMS: step.Budget.MaxDurationMS, MaxAttempts: step.Budget.MaxAttempts}
+	if err = tool.RegisterAdjustBudgetTool(registry, func(adj tool.BudgetAdjustment) (int, int, error) {
+		grantedInput := adj.MaxInputTokens
+		if grantedInput > maxContextBudget {
+			grantedInput = maxContextBudget
+		}
+		if grantedInput < 1024 {
+			grantedInput = 1024
+		}
+		grantedOutput := adj.MaxOutputTokens
+		if grantedOutput > maxOutputBudget {
+			grantedOutput = maxOutputBudget
+		}
+		if grantedOutput > 0 && grantedOutput < 256 {
+			grantedOutput = 256
+		}
+		if grantedInput > effectiveBudget.MaxInputTokens {
+			effectiveBudget.MaxInputTokens = grantedInput
+		}
+		if grantedOutput > 0 && grantedOutput > effectiveBudget.MaxOutputTokens {
+			effectiveBudget.MaxOutputTokens = grantedOutput
+		}
+		return grantedInput, grantedOutput, nil
+	}); err != nil {
+		return TaskSnapshot{}, err
+	}
 	contextPackage, err := modelContext(item, planVersion, step, deployment.ID, input.ContextPackage, input.ContextSections)
 	if err != nil {
 		return TaskSnapshot{}, err
@@ -1777,7 +1805,7 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	if _, err = s.CheckpointTask(ctx, item.ID); err != nil {
 		return TaskSnapshot{}, err
 	}
-	result, runErr := executor.Run(ctx, worker.Input{DeploymentID: deployment.ID, Step: step, PermissionMode: permissionMode, ContextPackage: &contextPackage, Skills: input.Skills})
+	result, runErr := executor.Run(ctx, worker.Input{DeploymentID: deployment.ID, Step: step, PermissionMode: permissionMode, ContextPackage: &contextPackage, Skills: input.Skills, EffectiveBudget: effectiveBudget})
 	for _, toolResult := range result.ToolResults {
 		if directIntentIDs[toolResult.ToolCallID] {
 			if updateErr := s.store.UpdateToolIntentStatus(ctx, toolResult.ToolCallID, toolResult.Status); updateErr != nil && runErr == nil {
