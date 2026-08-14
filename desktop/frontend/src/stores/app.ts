@@ -137,8 +137,16 @@ export const useAppStore = defineStore('app', () => {
     const text = prompt.value.trim()
     if (!canSend.value) return
     prompt.value = ''; clearFeedback()
+    // Optimistically show the user message immediately
+    const now = new Date().toISOString()
+    const userMsg = { message_id: 'temp_' + Date.now(), conversation_id: activeConversation.value?.conversation.id ?? '', role: 'user' as const, content: text, created_at: now }
+    if (activeConversation.value) {
+      activeConversation.value = { ...activeConversation.value, messages: [...activeConversation.value.messages, userMsg] }
+    }
+    await scrollChat()
     try {
       busy.value = true
+      agentStatus.value = { status: 'thinking', message: 'Agent 正在理解需求…' }
       const result = activeConversation.value
         ? await window.go.main.App.SendConversationMessage(activeConversation.value.conversation.id, text, deploymentID.value, permissionMode.value)
         : await window.go.main.App.StartConversation(workspaceID.value, text, deploymentID.value, permissionMode.value)
@@ -146,7 +154,7 @@ export const useAppStore = defineStore('app', () => {
       if (!next?.conversation?.id || !Array.isArray(next.messages)) throw new Error('桌面核心返回了不完整的会话数据；详情已写入诊断日志。')
       activeConversation.value = next; notice.value = '本轮已完成，执行过程和结果已保存到会话。'; await refresh()
     } catch (cause) { clientLog('error', '发送消息或渲染本轮结果失败', { conversation_id: activeConversation.value?.conversation?.id ?? '', permission_mode: permissionMode.value, error: String(cause) }); fail(cause) }
-    finally { busy.value = false; await scrollChat() }
+    finally { busy.value = false; agentStatus.value = null; await scrollChat() }
   }
 
   async function approveWrite(turn?: { report?: { pending_write?: PendingWriteBatch } }) {

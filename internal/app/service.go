@@ -1262,7 +1262,7 @@ func minimalPlan(item contracts.Task, allowWriteProposals bool) contracts.PlanVe
 		if mode == contracts.PermissionModePlan {
 			role = "RECON"
 		}
-		return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: summary, CreatedByAgent: "core-conversation-bootstrap", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: title, Goal: item.Goal, AllowedTools: toolNames, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_agent", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的模型 Agent 报告", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: risk, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: iterations, MaxDurationMS: int64((5 * time.Minute).Milliseconds()), MaxInputTokens: 8000, MaxOutputTokens: 2000}, ExecutionMode: "AGENT", PreferredRole: role}}}
+		return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: summary, CreatedByAgent: "core-conversation-bootstrap", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: title, Goal: item.Goal, AllowedTools: toolNames, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_agent", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的模型 Agent 报告", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: risk, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: iterations, MaxDurationMS: int64((10 * time.Minute).Milliseconds()), MaxInputTokens: 32768, MaxOutputTokens: 8192}, ExecutionMode: "AGENT", PreferredRole: role}}}
 	}
 	return deterministicReconPlan(item)
 }
@@ -1284,11 +1284,11 @@ func taskPermissionMode(item contracts.Task) (contracts.PermissionMode, error) {
 func modePlanShape(mode contracts.PermissionMode) ([]string, contracts.RiskClass, string, string, int) {
 	switch mode {
 	case contracts.PermissionModePlan:
-		return []string{"list_files", "file_info", "read_file", "search_text"}, contracts.RiskRead, "分析与规划（只读）", "在计划模式中只读取工作区信息，不执行命令、不修改文件。", 4
+		return []string{"list_files", "file_info", "read_file", "search_text", "ask_user", "adjust_context_budget"}, contracts.RiskRead, "分析与规划（只读）", "在计划模式中只读取工作区信息，不执行命令、不修改文件。", 4
 	case contracts.PermissionModeDevelopment:
-		return []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet", "write_file", "run_project_command"}, contracts.RiskDangerous, "开发执行", "在开发模式中执行受工作区边界、预算和审计约束的开发操作。", 8
+		return []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet", "write_file", "apply_patch", "run_project_command", "ask_user", "adjust_context_budget"}, contracts.RiskDangerous, "开发执行", "在开发模式中执行受工作区边界、预算和审计约束的开发操作。", 8
 	default:
-		return []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet", "propose_write_file", "propose_text_replace", "propose_file_batch", "propose_project_command"}, contracts.RiskWrite, "编辑与受控执行", "在编辑模式中读取工作区、提交可审阅的文件修改；项目命令必须先取得明确同意。", 7
+		return []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet", "propose_write_file", "propose_text_replace", "propose_file_batch", "propose_apply_patch", "propose_project_command", "ask_user", "adjust_context_budget"}, contracts.RiskWrite, "编辑与受控执行", "在编辑模式中读取工作区、提交可审阅的文件修改；项目命令必须先取得明确同意。", 7
 	}
 }
 
@@ -1928,7 +1928,7 @@ func modelContext(item contracts.Task, planVersion contracts.PlanVersion, step c
 	}
 	limit := step.Budget.MaxInputTokens
 	if limit <= 0 {
-		limit = 8192
+		limit = 32768
 	}
 	sections := make([]contracts.ContextSection, 0, len(extra)+1)
 	sections = append(sections, contracts.ContextSection{Type: "TASK_STEP", Content: string(encoded), SourceRefs: []string{item.ID, planVersion.PlanID, step.StepID}, Priority: 100})
