@@ -792,6 +792,22 @@ export namespace diagnostics {
 
 export namespace main {
 	
+	export class PendingQuestion {
+	    question: string;
+	    options: string[];
+	    context: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PendingQuestion(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.question = source["question"];
+	        this.options = source["options"];
+	        this.context = source["context"];
+	    }
+	}
 	export class TurnReportView {
 	    summary: string;
 	    tool_name: string;
@@ -799,6 +815,11 @@ export namespace main {
 	    truncated: boolean;
 	    pending_write?: app.PendingWriteBatch;
 	    pending_command?: app.PendingCommand;
+	    pending_question?: PendingQuestion;
+	    input_tokens: number;
+	    output_tokens: number;
+	    iterations: number;
+	    duration_seconds: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new TurnReportView(source);
@@ -812,6 +833,11 @@ export namespace main {
 	        this.truncated = source["truncated"];
 	        this.pending_write = this.convertValues(source["pending_write"], app.PendingWriteBatch);
 	        this.pending_command = this.convertValues(source["pending_command"], app.PendingCommand);
+	        this.pending_question = this.convertValues(source["pending_question"], PendingQuestion);
+	        this.input_tokens = source["input_tokens"];
+	        this.output_tokens = source["output_tokens"];
+	        this.iterations = source["iterations"];
+	        this.duration_seconds = source["duration_seconds"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -898,6 +924,7 @@ export namespace main {
 		    return a;
 		}
 	}
+	
 	export class PlanStepView {
 	    step_id: string;
 	    title: string;

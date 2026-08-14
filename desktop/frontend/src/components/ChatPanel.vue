@@ -45,6 +45,9 @@ function openArtifacts(turn: Turn) {
               <span>已调用：{{ store.reportTool(store.turnFor(message)) }}</span>
               <span>{{ store.artifactCount(store.turnFor(message)) }} 个产物</span>
               <span>{{ store.evidenceCount(store.turnFor(message)) }} 条证据</span>
+              <span v-if="store.turnFor(message)?.report?.input_tokens">Token：{{ store.turnFor(message)?.report?.input_tokens }} 入 / {{ store.turnFor(message)?.report?.output_tokens }} 出</span>
+              <span v-if="store.turnFor(message)?.report?.iterations">迭代：{{ store.turnFor(message)?.report?.iterations }} 轮</span>
+              <span v-if="store.turnFor(message)?.report?.duration_seconds">耗时：{{ store.turnFor(message)?.report?.duration_seconds?.toFixed(1) }}s</span>
               <button v-if="store.artifactCount(store.turnFor(message)) > 0" class="text-button" @click="store.viewPlan(store.turnFor(message)?.snapshot.task.id ?? '')">查看计划</button>
             </div>
 
@@ -77,6 +80,16 @@ function openArtifacts(turn: Turn) {
               <code>{{ commandText(store.pendingCommandFor(store.turnFor(message))) }}</code>
               <p>该命令只会在当前工作目录中执行一次，输出会被限额保存到执行记录。</p>
               <button class="primary-button" :disabled="store.busy" @click="store.approveCommand(store.turnFor(message))">确认并执行命令</button>
+            </section>
+
+            <section v-if="store.turnFor(message)?.report?.pending_question" class="approval-card question">
+              <div><b>Agent 提问</b></div>
+              <p class="question-text">{{ store.turnFor(message)?.report?.pending_question?.question }}</p>
+              <p v-if="store.turnFor(message)?.report?.pending_question?.context" class="question-context">{{ store.turnFor(message)?.report?.pending_question?.context }}</p>
+              <div v-if="store.turnFor(message)?.report?.pending_question?.options?.length" class="question-options">
+                <button v-for="opt in store.turnFor(message)?.report?.pending_question?.options" :key="opt" class="secondary-button" @click="store.prompt = opt; store.sendMessage()">{{ opt }}</button>
+              </div>
+              <p class="question-hint">选择上方选项，或在下方输入框回复后发送</p>
             </section>
           </section>
         </div>

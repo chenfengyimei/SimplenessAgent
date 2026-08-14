@@ -31,6 +31,11 @@ export type Turn = {
     truncated: boolean
     pending_write?: PendingWriteBatch
     pending_command?: PendingCommand
+    pending_question?: { question: string; options: string[]; context: string }
+    input_tokens: number
+    output_tokens: number
+    iterations: number
+    duration_seconds: number
   }
 }
 

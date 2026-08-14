@@ -38,12 +38,23 @@ type ConversationTurn struct {
 }
 
 type TurnReportView struct {
-	Summary        string                 `json:"summary"`
-	ToolName       string                 `json:"tool_name"`
-	Files          []string               `json:"files"`
-	Truncated      bool                   `json:"truncated"`
-	PendingWrite   *app.PendingWriteBatch `json:"pending_write,omitempty"`
-	PendingCommand *app.PendingCommand    `json:"pending_command,omitempty"`
+	Summary          string                 `json:"summary"`
+	ToolName         string                 `json:"tool_name"`
+	Files            []string               `json:"files"`
+	Truncated        bool                   `json:"truncated"`
+	PendingWrite     *app.PendingWriteBatch `json:"pending_write,omitempty"`
+	PendingCommand   *app.PendingCommand    `json:"pending_command,omitempty"`
+	PendingQuestion  *PendingQuestion       `json:"pending_question,omitempty"`
+	InputTokens      int                    `json:"input_tokens"`
+	OutputTokens     int                    `json:"output_tokens"`
+	Iterations       int                    `json:"iterations"`
+	DurationSeconds  float64                `json:"duration_seconds"`
+}
+
+type PendingQuestion struct {
+	Question string   `json:"question"`
+	Options  []string `json:"options"`
+	Context  string   `json:"context"`
 }
 
 // NewApp creates a new App application struct
@@ -472,6 +483,12 @@ func buildTurnReport(service *app.Service, taskID string, snapshot app.TaskSnaps
 			return view, err
 		}
 		view.Summary = strings.TrimSpace(report.Summary)
+		view.InputTokens = report.Usage.InputTokens
+		view.OutputTokens = report.Usage.OutputTokens
+		view.Iterations = report.Iterations
+		if !snapshot.Task.CreatedAt.IsZero() {
+			view.DurationSeconds = time.Since(snapshot.Task.CreatedAt).Seconds()
+		}
 		toolNames := make([]string, 0, len(report.ToolResults))
 		for _, result := range report.ToolResults {
 			if result.Data != nil {
@@ -501,6 +518,21 @@ func buildTurnReport(service *app.Service, taskID string, snapshot app.TaskSnaps
 				view.PendingCommand = &pendingCommand
 				view.Summary = "Agent 已准备好执行项目命令，正在等待你的确认；确认后会在当前工作目录内受限执行并保存输出。"
 				view.ToolName = "等待命令审批"
+			}
+		}
+		if snapshot.Task.Status == contracts.TaskWaitingUser {
+			questionContent, questionErr := service.ReadTaskArtifact(context.Background(), taskID, "USER_QUESTION")
+			if questionErr == nil {
+				var uq struct {
+					Question string   `json:"Question"`
+					Options  []string `json:"Options"`
+					Context  string   `json:"Context"`
+				}
+				if json.Unmarshal(questionContent, &uq) == nil {
+					view.PendingQuestion = &PendingQuestion{Question: uq.Question, Options: uq.Options, Context: uq.Context}
+					view.Summary = uq.Question
+					view.ToolName = "等待用户回答"
+				}
 			}
 		}
 		return view, nil
