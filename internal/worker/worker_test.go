@@ -168,6 +168,40 @@ func TestRunRejectsInvalidOrRepeatedToolActions(t *testing.T) {
 	})
 }
 
+func TestRunRepairsTooManyToolsBeforeAnyInvocation(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{
+		{ToolCalls: []contracts.ToolCall{
+			{ID: "too_many_1", Name: "lookup", ArgumentsJSON: `{"query":"first"}`},
+			{ID: "too_many_2", Name: "lookup", ArgumentsJSON: `{"query":"second"}`},
+		}},
+		{ToolCalls: []contracts.ToolCall{{ID: "repaired", Name: "lookup", ArgumentsJSON: `{"query":"only"}`}}},
+		{Text: "Done after bounded retry."},
+	}}
+	invocations := 0
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(_ context.Context, args map[string]interface{}) (contracts.ToolResult, error) {
+		invocations++
+		if args["query"] != "only" {
+			t.Fatalf("an over-limit tool call was invoked: %#v", args)
+		}
+		return contracts.ToolResult{Status: "SUCCEEDED", Summary: "bounded"}, nil
+	})
+	executor, _ := New(provider, registry)
+	result, err := executor.Run(context.Background(), Input{Step: testStep(3), MaxToolCallsPerResponse: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "Done after bounded retry." || invocations != 1 || len(result.ToolResults) != 1 || result.Iterations != 3 {
+		t.Fatalf("tool-limit repair was not side-effect safe: result=%#v invocations=%d", result, invocations)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected one repair and one evidence response, got %d requests", len(provider.requests))
+	}
+	repair := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content
+	if !strings.Contains(repair, "requested 2 tools") || !strings.Contains(repair, "limit is 1") {
+		t.Fatalf("repair prompt did not explain the tool-call limit: %s", repair)
+	}
+}
+
 func TestRunStopsAtBudgetAndRejectsWriteTools(t *testing.T) {
 	provider := &scriptedProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{"query":"one"}`}}}}}
 	registry := testRegistry(t, contracts.RiskWrite, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {

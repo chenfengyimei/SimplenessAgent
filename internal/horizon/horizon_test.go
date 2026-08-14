@@ -2,6 +2,7 @@ package horizon
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,4 +58,97 @@ func TestSegmentPlannerRejectsRepeatedStepIntent(t *testing.T) {
 	if domain, ok := err.(*contracts.Error); !ok || domain.Code != contracts.ErrPlanInvalid {
 		t.Fatalf("expected repeated step intent to fail after repair, got %v", err)
 	}
+}
+
+func TestDecodeCandidateAcceptsThinkingPrefixWrapperAndCommonAliases(t *testing.T) {
+	response := `<think>{"analysis":"inspect before planning"}</think>
+~~~json
+{"candidate":{"summary":"inspect safely","terminal":true,"metadata":{"model":"small"},"steps":[{"id":"scan","title":"Scan files","objective":"Locate the implementation","dependsOn":[],"tool_intent":"list_files","acceptance":"Relevant files are identified","confidence":0.8}]}}
+~~~`
+	candidate, err := decodeCandidate(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Summary != "inspect safely" || !candidate.TerminalSegment || len(candidate.Steps) != 1 {
+		t.Fatalf("unexpected normalized candidate: %#v", candidate)
+	}
+	step := candidate.Steps[0]
+	if step.Ref != "scan" || step.Goal != "Locate the implementation" || len(step.ToolIntents) != 1 || step.ToolIntents[0] != "list_files" || step.AcceptanceIntent != "Relevant files are identified" {
+		t.Fatalf("common aliases were not normalized: %#v", step)
+	}
+}
+
+func TestSegmentPlannerRepairIncludesSpecificSchemaError(t *testing.T) {
+	provider := &plannerScriptProvider{responses: []string{
+		`{"summary":7,"terminal_segment":true,"steps":[]}`,
+		`{"summary":"repaired","terminal_segment":true,"steps":[{"ref":"scan","title":"Scan","goal":"Locate files","dependencies":[],"tool_intents":["list_files"],"acceptance_intent":"Files are identified"}]}`,
+	}}
+	planner, err := NewSegmentPlanner(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	horizonPlan := DefaultPlan("task", now)
+	result, _, err := planner.Create(context.Background(), SegmentInput{
+		DeploymentID: "dep",
+		Task:         contracts.Task{ID: "task", Goal: "goal", Spec: contracts.TaskSpec{TaskID: "task", Budget: contracts.TaskBudget{MaxSteps: 20, MaxSegmentSteps: 4}}},
+		Horizon:      contracts.HorizonState{HorizonID: horizonPlan.HorizonID, Plan: horizonPlan},
+		Stage:        horizonPlan.Stages[0],
+		Tools:        []contracts.ToolDefinition{{Name: "list_files", RiskClass: contracts.RiskRead, ParametersSchema: map[string]interface{}{"type": "object"}}},
+		Profile:      DefaultProfiles("dep", now)[0],
+		Revision:     2,
+	})
+	if err != nil || len(result.Steps) != 1 {
+		t.Fatalf("specific repair did not recover: plan=%#v err=%v", result, err)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected one repair call, got %d", len(provider.requests))
+	}
+	repair := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content
+	if !strings.Contains(repair, "summary must be a string") || !strings.Contains(repair, "Exact shape example") {
+		t.Fatalf("repair prompt lost the actionable schema error: %s", repair)
+	}
+}
+
+func TestSegmentPlannerReportsSpecificErrorAfterRepair(t *testing.T) {
+	provider := mock.Provider{Response: `{"summary":7,"terminal_segment":true,"steps":[]}`}
+	planner, _ := NewSegmentPlanner(provider)
+	now := time.Now().UTC()
+	horizonPlan := DefaultPlan("task", now)
+	_, _, err := planner.Create(context.Background(), SegmentInput{
+		DeploymentID: "dep",
+		Task:         contracts.Task{ID: "task", Goal: "goal", Spec: contracts.TaskSpec{TaskID: "task", Budget: contracts.TaskBudget{MaxSteps: 20, MaxSegmentSteps: 4}}},
+		Horizon:      contracts.HorizonState{HorizonID: horizonPlan.HorizonID, Plan: horizonPlan},
+		Stage:        horizonPlan.Stages[0],
+		Tools:        []contracts.ToolDefinition{{Name: "list_files", RiskClass: contracts.RiskRead, ParametersSchema: map[string]interface{}{"type": "object"}}},
+		Profile:      DefaultProfiles("dep", now)[0],
+		Revision:     2,
+	})
+	if err == nil || !strings.Contains(err.Error(), "summary must be a string") {
+		t.Fatalf("planner failure did not preserve the concrete decode error: %v", err)
+	}
+}
+
+type plannerScriptProvider struct {
+	responses []string
+	requests  []contracts.ChatRequest
+}
+
+func (p *plannerScriptProvider) Chat(_ context.Context, request contracts.ChatRequest) (contracts.ChatResponse, error) {
+	p.requests = append(p.requests, request)
+	response := p.responses[0]
+	p.responses = p.responses[1:]
+	return contracts.ChatResponse{Text: response}, nil
+}
+
+func (p *plannerScriptProvider) ChatStream(context.Context, contracts.ChatRequest, contracts.StreamSink) error {
+	return nil
+}
+
+func (p *plannerScriptProvider) HealthCheck(context.Context) contracts.HealthStatus {
+	return contracts.HealthStatus{Healthy: true}
+}
+
+func (p *plannerScriptProvider) ProbeCapabilities(context.Context) contracts.CapabilitySnapshot {
+	return contracts.CapabilitySnapshot{SupportsTools: true, ReliableContextTokens: 8192}
 }

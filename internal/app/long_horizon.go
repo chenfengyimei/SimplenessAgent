@@ -264,6 +264,8 @@ func (s *Service) planNextHorizonSegment(ctx context.Context, item contracts.Tas
 	}
 	ledger := s.readProgressLedger(ctx, item, state)
 	segment, usage, err := planner.Create(ctx, horizoncore.SegmentInput{DeploymentID: deployment.ID, Task: item, Horizon: state, Stage: currentStage(state), Ledger: ledger, Tools: definitions, Profile: profile, Revision: previous.Revision + 1, ParentPlanID: previous.PlanID})
+	state.Usage.InputTokens += usage.InputTokens
+	state.Usage.OutputTokens += usage.OutputTokens
 	if err != nil {
 		return s.recordHorizonFailure(ctx, item, state, previous, err)
 	}
@@ -282,8 +284,6 @@ func (s *Service) planNextHorizonSegment(ctx context.Context, item contracts.Tas
 	}
 	state.SegmentIndex = segment.SegmentIndex
 	state.StepsPlanned += len(segment.Steps)
-	state.Usage.InputTokens += usage.InputTokens
-	state.Usage.OutputTokens += usage.OutputTokens
 	state.NoProgressCycles++
 	if err = s.persistLedgerAndState(ctx, item, &state, "HORIZON_SEGMENT_READY"); err != nil {
 		return contracts.LongHorizonCycleResult{}, err
@@ -487,12 +487,33 @@ func (s *Service) recordHorizonFailure(ctx context.Context, item contracts.Task,
 	}
 	state.LatestFailureArtifactID = artifactItem.ID
 	state.Status = contracts.HorizonPaused
-	state.CheckpointReason = "cycle failed: " + code
+	state.CheckpointReason = boundedCheckpointReason("cycle failed: "+cause.Error(), 600)
 	state.ReplansUsed++
+	latestTask, taskErr := s.store.GetTask(ctx, item.ID)
+	if taskErr != nil {
+		return contracts.LongHorizonCycleResult{}, taskErr
+	}
+	if latestTask.Status == contracts.TaskReady || latestTask.Status == contracts.TaskRunning {
+		if taskErr = s.transitionTask(ctx, item.ID, latestTask.Status, contracts.TaskPaused, "HORIZON_FAILURE_PAUSED"); taskErr != nil {
+			return contracts.LongHorizonCycleResult{}, taskErr
+		}
+		item.Status = contracts.TaskPaused
+	}
 	if err := s.persistLedgerAndState(ctx, item, &state, "HORIZON_FAILURE_RECORDED"); err != nil {
 		return contracts.LongHorizonCycleResult{}, err
 	}
-	return cycleResult(item, state, "FAILED_PAUSED"), cause
+	// A model/schema/tool failure is a durable long-horizon outcome, not a lost
+	// service operation. The failure artifact and PAUSED checkpoint let desktop
+	// and CLI callers show the exact reason and resume explicitly.
+	return cycleResult(item, state, "FAILED_PAUSED"), nil
+}
+
+func boundedCheckpointReason(value string, limit int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if limit <= 0 || len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit]) + "..."
 }
 
 func (s *Service) pauseHorizonForBudget(ctx context.Context, item contracts.Task, state contracts.HorizonState) (contracts.LongHorizonCycleResult, error) {

@@ -132,12 +132,15 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		if toolCallLimit <= 0 {
 			toolCallLimit = maxToolCallsPerResponse
 		}
+		var validationError error
 		if len(response.ToolCalls) > toolCallLimit {
-			return result, contracts.NewError(contracts.ErrInvalidToolCall, "model requested too many tools in one response")
+			validationError = contracts.NewError(contracts.ErrInvalidToolCall, fmt.Sprintf("model requested %d tools in one response; the limit is %d", len(response.ToolCalls), toolCallLimit))
 		}
 		toolMessages := make([]contracts.Message, 0, len(response.ToolCalls))
-		var validationError error
 		for _, call := range response.ToolCalls {
+			if validationError != nil {
+				break
+			}
 			definition, ok := w.registry.Definition(call.Name)
 			if !ok || !containsTool(allowed, call.Name) {
 				validationError = contracts.NewError(contracts.ErrToolNotAllowed, "requested tool is not allowed for this step")
@@ -172,8 +175,7 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		}
 		if validationError != nil && !repairAttempted && iteration+1 < input.Step.Budget.MaxIterations {
 			messages = append(messages, contracts.Message{Role: "assistant", Content: response.Text, ToolCalls: response.ToolCalls})
-			messages = append(messages, contracts.Message{Role: "user", Content: "Your previous tool call had an error: " + validationError.Error() + ". Please fix the issue and retry. Ensure tool arguments are valid JSON matching the tool's parameter schema."})
-			result.Iterations++
+			messages = append(messages, contracts.Message{Role: "user", Content: "Your previous tool call had an error: " + validationError.Error() + ". Fix it and retry. Request no more than the configured number of tools, and ensure every tool argument is valid JSON matching its parameter schema."})
 			repairAttempted = true
 			continue
 		}

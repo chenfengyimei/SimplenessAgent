@@ -146,6 +146,46 @@ func TestCreateLongHorizonFailsClosedForVerified4KDeployment(t *testing.T) {
 	}
 }
 
+func TestLongHorizonPlannerFormatFailureReturnsDurablePausedCycle(t *testing.T) {
+	ctx := context.Background()
+	provider := &longHorizonProvider{responses: []contracts.ChatResponse{
+		{Text: `{"summary":7,"terminal_segment":true,"steps":[]}`},
+		{Text: `{"summary":7,"terminal_segment":true,"steps":[]}`},
+	}}
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) { return provider, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspaceItem, err := service.CreateWorkspace(ctx, "paused", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "small", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "small", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateLongHorizonTask(ctx, CreateLongHorizonTaskInput{DeploymentID: deployment.ID, CreateTaskInput: CreateTaskInput{WorkspaceID: workspaceItem.ID, Title: "planner format", Goal: "build a project", PermissionMode: contracts.PermissionModePlan, StageCheckpointPolicy: contracts.StageCheckpointNone}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle, err := service.AdvanceLongHorizonTask(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("a persisted planner pause must not surface as a service error: %v", err)
+	}
+	if cycle.Status != contracts.HorizonPaused || cycle.Action != "FAILED_PAUSED" || !strings.Contains(cycle.CheckpointReason, "summary must be a string") {
+		t.Fatalf("planner failure was not returned as a diagnostic paused cycle: %#v", cycle)
+	}
+	state, err := service.GetLongHorizonStatus(ctx, created.ID)
+	if err != nil || state.LatestFailureArtifactID == "" || state.ReplansUsed != 1 {
+		t.Fatalf("planner failure was not durably checkpointed: state=%#v err=%v", state, err)
+	}
+	snapshot, err := service.GetTaskSnapshot(ctx, created.ID)
+	if err != nil || snapshot.Task.Status != contracts.TaskPaused {
+		t.Fatalf("planner failure did not pause the task itself: task=%#v err=%v", snapshot.Task, err)
+	}
+}
+
 func TestLongHorizonAdvancesSegmentsAndWaitsAfterDesign(t *testing.T) {
 	ctx := context.Background()
 	provider := &longHorizonProvider{responses: []contracts.ChatResponse{
