@@ -35,6 +35,7 @@ const riskColors: Record<string, string> = { READ: '#5b8c5a', WRITE: '#c4923a', 
           <div v-if="loading" class="plan-loading">加载中…</div>
           <template v-else-if="plan">
             <p class="plan-summary" v-if="plan.summary">{{ plan.summary }}</p>
+            <div class="plan-reason" v-if="plan.stage_id"><small>{{ plan.stage_id }} · Segment {{ plan.segment_index }} · {{ plan.terminal_segment ? '阶段末段' : '滚动段' }}</small></div>
             <div class="plan-reason" v-if="plan.reason"><small>原因：{{ plan.reason }}</small></div>
             <div class="plan-steps">
               <div v-for="step in plan.steps" :key="step.step_id" class="plan-step">

@@ -337,7 +337,7 @@ func (p *Provider) requestBody(request contracts.ChatRequest, stream bool) ([]by
 		}
 		tools = append(tools, wireTool{Type: "function", Function: wireFunction{Name: tool.Name, Description: tool.Description, Parameters: schema}})
 	}
-	requestBody := wireRequest{Model: p.model, Messages: messages, Tools: tools, Stream: stream, MaxTokens: request.MaxOutputTokens}
+	requestBody := wireRequest{Model: p.model, Messages: messages, Tools: tools, Stream: stream, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature}
 	if request.JSONMode {
 		requestBody.ResponseFormat = &wireResponseFormat{Type: "json_object"}
 	}
@@ -461,6 +461,7 @@ type wireRequest struct {
 	Tools          []wireTool          `json:"tools,omitempty"`
 	Stream         bool                `json:"stream"`
 	MaxTokens      int                 `json:"max_tokens,omitempty"`
+	Temperature    *float64            `json:"temperature,omitempty"`
 	ResponseFormat *wireResponseFormat `json:"response_format,omitempty"`
 }
 type wireResponseFormat struct {

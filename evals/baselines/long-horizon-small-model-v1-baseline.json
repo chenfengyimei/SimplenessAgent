@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "suite": "long-horizon-small-model-v1",
+  "baseline_date": "2026-08-14",
+  "status": "pending_real_deployment_runs",
+  "deployments": [
+    {
+      "class": "7B",
+      "required_runs_per_case": 5,
+      "completed_runs": 0,
+      "metrics": null
+    },
+    {
+      "class": "14B",
+      "required_runs_per_case": 5,
+      "completed_runs": 0,
+      "metrics": null
+    }
+  ],
+  "deterministic_coverage": {
+    "incremental_segment_bounds": "go test ./internal/horizon",
+    "durable_cycle_and_stage_checkpoint": "go test ./internal/app -run LongHorizon",
+    "provider_retry_without_side_effect_replay": "go test ./internal/worker -run Retry",
+    "verified_4k_fail_closed": "go test ./internal/app -run Verified4K",
+    "full_regression": "go test ./..."
+  },
+  "note": "Do not mark this baseline released until named 7B and 14B deployments each complete at least five runs per case and satisfy every suite gate."
+}

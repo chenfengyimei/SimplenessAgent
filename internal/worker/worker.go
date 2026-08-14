@@ -9,11 +9,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
 	"time"
 
+	"github.com/xm/simplenessagent/internal/tokenbudget"
 	"github.com/xm/simplenessagent/internal/tool"
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
@@ -42,14 +44,17 @@ type Input struct {
 	// ReliableContextTokens is the verified usable context window for the
 	// deployment. A zero value deliberately selects a conservative small-model
 	// default instead of assuming a large cloud-model context.
-	ReliableContextTokens int
+	ReliableContextTokens   int
+	MaxToolCallsPerResponse int
+	Temperature             *float64
 }
 
 type Result struct {
-	Text        string
-	ToolResults []contracts.ToolResult
-	Usage       contracts.TokenUsage
-	Iterations  int
+	Text                  string
+	ToolResults           []contracts.ToolResult
+	Usage                 contracts.TokenUsage
+	Iterations            int
+	ContextRecompilations int
 }
 
 func New(provider contracts.ChatProvider, registry *tool.Registry) (*Worker, error) {
@@ -91,11 +96,17 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 			return result, cancelledOrTimedOut(err)
 		}
 		budget := effectiveBudget(input)
-		maxOutput, err := requestOutputLimit(input, messages, allowed, budget)
+		var recompiled bool
+		messages, recompiled = recompileAtSoftLimit(runContext, w.provider, input.DeploymentID, messages, allowed, reliableContextTokens(input))
+		if recompiled {
+			result.ContextRecompilations++
+		}
+		maxOutput, err := requestOutputLimit(runContext, w.provider, input, messages, allowed, budget)
 		if err != nil {
 			return result, err
 		}
-		response, err := w.provider.Chat(runContext, contracts.ChatRequest{DeploymentID: input.DeploymentID, Messages: messages, Tools: allowed, MaxOutputTokens: maxOutput})
+		response, overflowRecompilations, err := chatWithRetry(runContext, w.provider, contracts.ChatRequest{DeploymentID: input.DeploymentID, Messages: messages, Tools: allowed, MaxOutputTokens: maxOutput, Temperature: input.Temperature})
+		result.ContextRecompilations += overflowRecompilations
 		if err != nil {
 			return result, err
 		}
@@ -117,7 +128,11 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 			result.Text = response.Text
 			return result, nil
 		}
-		if len(response.ToolCalls) > maxToolCallsPerResponse {
+		toolCallLimit := input.MaxToolCallsPerResponse
+		if toolCallLimit <= 0 {
+			toolCallLimit = maxToolCallsPerResponse
+		}
+		if len(response.ToolCalls) > toolCallLimit {
 			return result, contracts.NewError(contracts.ErrInvalidToolCall, "model requested too many tools in one response")
 		}
 		toolMessages := make([]contracts.Message, 0, len(response.ToolCalls))
@@ -173,6 +188,91 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		}
 	}
 	return result, contracts.NewError(contracts.ErrBudgetExceeded, "step iteration budget exceeded")
+}
+
+func recompileAtSoftLimit(ctx context.Context, provider contracts.ChatProvider, deploymentID string, messages []contracts.Message, tools []contracts.ToolDefinition, window int) ([]contracts.Message, bool) {
+	prompt := tokenbudget.Count(ctx, provider, contracts.TokenCountRequest{DeploymentID: deploymentID, Messages: messages, Tools: tools}).Tokens
+	if prompt*10 < window*8 {
+		return messages, false
+	}
+	return compactOverflowMessages(messages), true
+}
+
+// chatWithRetry retries only the provider request. Tool calls are executed
+// after this function returns successfully, so a retry cannot replay a file or
+// command side effect. Context overflow gets one smaller, traceable request;
+// transient provider failures get at most two exponentially delayed retries.
+func chatWithRetry(ctx context.Context, provider contracts.ChatProvider, request contracts.ChatRequest) (contracts.ChatResponse, int, error) {
+	working := request
+	contextRetried := false
+	transientRetries := 0
+	recompilations := 0
+	for {
+		response, err := provider.Chat(ctx, working)
+		if err == nil {
+			return response, recompilations, nil
+		}
+		if ctx.Err() != nil {
+			return contracts.ChatResponse{}, recompilations, cancelledOrTimedOut(ctx.Err())
+		}
+		code, ok := errorCode(err)
+		if ok && code == contracts.ErrContextOverflow && !contextRetried {
+			working.Messages = compactOverflowMessages(working.Messages)
+			contextRetried = true
+			recompilations++
+			continue
+		}
+		if !ok || !retryableProviderCode(code) || transientRetries >= 2 {
+			return contracts.ChatResponse{}, recompilations, err
+		}
+		wait := 25 * time.Millisecond * time.Duration(1<<transientRetries)
+		transientRetries++
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return contracts.ChatResponse{}, recompilations, cancelledOrTimedOut(ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func errorCode(err error) (contracts.ErrorCode, bool) {
+	var domain *contracts.Error
+	if !errors.As(err, &domain) {
+		return "", false
+	}
+	return domain.Code, true
+}
+
+func retryableProviderCode(code contracts.ErrorCode) bool {
+	switch code {
+	case contracts.ErrEndpointUnreachable, contracts.ErrRateLimited, contracts.ErrRequestTimeout, contracts.ErrModelUnavailable, contracts.ErrProviderInternal:
+		return true
+	default:
+		return false
+	}
+}
+
+func compactOverflowMessages(messages []contracts.Message) []contracts.Message {
+	compacted := append([]contracts.Message(nil), messages...)
+	for index := range compacted {
+		if compacted[index].Role == "system" || len([]rune(compacted[index].Content)) < 512 {
+			continue
+		}
+		content := compacted[index].Content
+		runes := []rune(content)
+		keep := len(runes) / 4
+		if keep < 256 {
+			keep = 256
+		}
+		if keep*2 >= len(runes) {
+			continue
+		}
+		digest := sha256.Sum256([]byte(content))
+		compacted[index].Content = string(runes[:keep]) + fmt.Sprintf("\n\n[context recompiled after provider overflow; original_sha256=%x; omitted_runes=%d]\n\n", digest, len(runes)-keep*2) + string(runes[len(runes)-keep:])
+	}
+	return compacted
 }
 
 func permissionContract(mode contracts.PermissionMode) string {
@@ -262,10 +362,7 @@ func scopeWithinStep(scope string, allowed []string) bool {
 }
 
 func estimateTokens(value string) int {
-	if len(value) == 0 {
-		return 0
-	}
-	return (len([]rune(value)) + 3) / 4
+	return tokenbudget.EstimateText(value)
 }
 
 func validateContextPackage(step contracts.StepSpec, value contracts.ContextPackage) error {
@@ -377,9 +474,12 @@ func reliableContextTokens(input Input) int {
 	return defaultReliableContextTokens
 }
 
-func requestOutputLimit(input Input, messages []contracts.Message, tools []contracts.ToolDefinition, budget contracts.StepBudget) (int, error) {
+func requestOutputLimit(ctx context.Context, provider contracts.ChatProvider, input Input, messages []contracts.Message, tools []contracts.ToolDefinition, budget contracts.StepBudget) (int, error) {
 	window := reliableContextTokens(input)
-	prompt := estimateChatTokens(messages, tools)
+	prompt := tokenbudget.Count(ctx, provider, contracts.TokenCountRequest{DeploymentID: input.DeploymentID, Messages: messages, Tools: tools}).Tokens
+	if prompt*10 >= window*9 {
+		return 0, contracts.NewError(contracts.ErrContextOverflow, fmt.Sprintf("model context reached the 90%% hard limit (window=%d, prompt=%d)", window, prompt))
+	}
 	available := window - prompt - promptSafetyTokens
 	if available < minimumResponseTokens {
 		return 0, contracts.NewError(contracts.ErrContextOverflow, fmt.Sprintf("model context is full before a response can be generated (window=%d, estimated_prompt=%d); reduce tool or conversation context", window, prompt))
@@ -401,18 +501,11 @@ func requestOutputLimit(input Input, messages []contracts.Message, tools []contr
 }
 
 func estimateChatTokens(messages []contracts.Message, tools []contracts.ToolDefinition) int {
-	encoded, err := json.Marshal(struct {
-		Messages []contracts.Message        `json:"messages"`
-		Tools    []contracts.ToolDefinition `json:"tools,omitempty"`
-	}{Messages: messages, Tools: tools})
-	if err != nil {
-		return 0
-	}
-	return estimateTokens(string(encoded))
+	return tokenbudget.EstimateRequest(messages, tools)
 }
 
 func toolResultTokenLimit(input Input) int {
-	limit := reliableContextTokens(input) / 4
+	limit := reliableContextTokens(input) / 5
 	if limit < 256 {
 		return 256
 	}
@@ -435,12 +528,16 @@ func marshalToolResultForModel(result contracts.ToolResult, limit int) ([]byte, 
 	if len(preview) > previewRunes {
 		preview = preview[:previewRunes]
 	}
+	digest := sha256.Sum256(encoded)
 	return json.Marshal(map[string]interface{}{
-		"status":         result.Status,
-		"summary":        result.Summary,
-		"error":          result.Error,
-		"data_truncated": true,
-		"data_preview":   string(preview),
+		"status":               result.Status,
+		"summary":              result.Summary,
+		"error":                result.Error,
+		"data_truncated":       true,
+		"data_preview":         string(preview),
+		"full_result_sha256":   fmt.Sprintf("sha256:%x", digest),
+		"full_result_location": "task AGENT_REPORT artifact: $.tool_results",
+		"original_bytes":       len(encoded),
 	})
 }
 

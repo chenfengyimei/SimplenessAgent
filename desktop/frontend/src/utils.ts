@@ -1,5 +1,6 @@
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import type { PendingCommand, PermissionMode } from './types'
 
 marked.setOptions({ breaks: true, gfm: true })
 

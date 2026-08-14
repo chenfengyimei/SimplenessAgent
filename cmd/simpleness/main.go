@@ -143,7 +143,7 @@ func workspaceCommand(ctx context.Context, service *app.Service, args []string) 
 
 func taskCommand(ctx context.Context, service *app.Service, args []string) error {
 	if len(args) == 0 {
-		return errors.New("task command is required: create | list | show | plan | run | run-model | coordinate | agents | events")
+		return errors.New("task command is required: create | create-long | advance | horizon | resume | cancel | list | show | plan | run | run-model | coordinate | agents | events")
 	}
 	switch args[0] {
 	case "create":
@@ -160,6 +160,61 @@ func taskCommand(ctx context.Context, service *app.Service, args []string) error
 			return err
 		}
 		return printJSON(map[string]interface{}{"task": item, "plan": plan})
+	case "create-long":
+		flags := flag.NewFlagSet("task create-long", flag.ContinueOnError)
+		workspaceID := flags.String("workspace", "", "workspace identifier")
+		deploymentID := flags.String("deployment", "", "enabled deployment identifier")
+		title := flags.String("title", "", "task title")
+		goal := flags.String("goal", "", "task goal")
+		permission := flags.String("permission", string(contracts.PermissionModeEdit), "PLAN or approval-gated EDIT")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		mode, err := contracts.ParsePermissionMode(strings.ToUpper(strings.TrimSpace(*permission)))
+		if err != nil {
+			return err
+		}
+		item, state, err := service.CreateLongHorizonTask(ctx, app.CreateLongHorizonTaskInput{DeploymentID: *deploymentID, CreateTaskInput: app.CreateTaskInput{WorkspaceID: *workspaceID, Title: *title, Goal: *goal, PermissionMode: mode, AllowWriteProposals: mode == contracts.PermissionModeEdit}})
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]interface{}{"task": item, "horizon": state})
+	case "advance":
+		if len(args) != 2 {
+			return errors.New("usage: simpleness task advance <task-id>")
+		}
+		result, err := service.AdvanceLongHorizonTask(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		return printJSON(result)
+	case "horizon":
+		if len(args) != 2 {
+			return errors.New("usage: simpleness task horizon <task-id>")
+		}
+		state, err := service.GetLongHorizonStatus(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		return printJSON(state)
+	case "resume":
+		if len(args) != 2 {
+			return errors.New("usage: simpleness task resume <task-id>")
+		}
+		state, err := service.ResumeLongHorizonTask(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		return printJSON(state)
+	case "cancel":
+		if len(args) != 2 {
+			return errors.New("usage: simpleness task cancel <task-id>")
+		}
+		state, err := service.CancelLongHorizonTask(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		return printJSON(state)
 	case "list":
 		flags := flag.NewFlagSet("task list", flag.ContinueOnError)
 		workspaceID := flags.String("workspace", "", "optional workspace identifier")
@@ -251,7 +306,7 @@ func taskCommand(ctx context.Context, service *app.Service, args []string) error
 		}
 		return printJSON(items)
 	default:
-		return errors.New("task command is required: create | list | show | plan | run | run-model | coordinate | agents | events")
+		return errors.New("task command is required: create | create-long | advance | horizon | resume | cancel | list | show | plan | run | run-model | coordinate | agents | events")
 	}
 }
 

@@ -36,7 +36,7 @@ func TestCompileEstimatesAndNormalizesSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	section := result.Package.Sections[0]
-	if section.EstimatedTokens != 2 || len(section.SourceRefs) != 2 || section.SourceRefs[0] != "a" || result.Package.CompilerVersion != compilerVersion {
+	if section.EstimatedTokens != 3 || len(section.SourceRefs) != 2 || section.SourceRefs[0] != "a" || result.Package.CompilerVersion != compilerVersion {
 		t.Fatalf("unexpected normalized section: %#v", result.Package)
 	}
 }

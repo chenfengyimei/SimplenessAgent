@@ -232,6 +232,58 @@ func TestRunRejectsOverfullPromptBeforeCallingProvider(t *testing.T) {
 	}
 }
 
+func TestRunRetriesTransientProviderWithoutReplayingToolSideEffect(t *testing.T) {
+	provider := &scriptedProvider{
+		chatErrors: []error{nil, contracts.NewError(contracts.ErrRateLimited, "busy"), nil},
+		responses: []contracts.ChatResponse{
+			{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{"query":"once"}`}}},
+			{Text: "done"},
+		},
+	}
+	invocations := 0
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(_ context.Context, _ map[string]interface{}) (contracts.ToolResult, error) {
+		invocations++
+		return contracts.ToolResult{Status: "SUCCEEDED", Summary: "once"}, nil
+	})
+	executor, err := New(provider, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := executor.Run(context.Background(), Input{DeploymentID: "dep", Step: testStep(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "done" || invocations != 1 || len(provider.requests) != 3 {
+		t.Fatalf("retry replayed work or lost response: result=%#v invocations=%d requests=%d", result, invocations, len(provider.requests))
+	}
+}
+
+func TestRunRecompilesOnceAfterProviderContextOverflow(t *testing.T) {
+	provider := &scriptedProvider{
+		chatErrors: []error{contracts.NewError(contracts.ErrContextOverflow, "provider rejected prompt"), nil},
+		responses:  []contracts.ChatResponse{{Text: "recovered"}},
+	}
+	executor, err := New(provider, testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(_ context.Context, _ map[string]interface{}) (contracts.ToolResult, error) {
+		return contracts.ToolResult{}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextText := strings.Repeat("long context data ", 200)
+	result, err := executor.Run(context.Background(), Input{DeploymentID: "dep", Step: testStep(1), Context: contextText, ReliableContextTokens: 8192})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "recovered" || len(provider.requests) != 2 {
+		t.Fatalf("expected one compacted retry, got result=%#v requests=%d", result, len(provider.requests))
+	}
+	first := provider.requests[0].Messages[1].Content
+	second := provider.requests[1].Messages[1].Content
+	if len(second) >= len(first) || !strings.Contains(second, "context recompiled after provider overflow") {
+		t.Fatalf("overflow retry was not traceably compacted: first=%d second=%d", len(first), len(second))
+	}
+}
+
 func TestMarshalToolResultForModelKeepsBoundedValidJSON(t *testing.T) {
 	encoded, err := marshalToolResultForModel(contracts.ToolResult{Status: "SUCCEEDED", Summary: "file read", Data: map[string]interface{}{"content": strings.Repeat("x", 10000)}}, 128)
 	if err != nil || !json.Valid(encoded) || !strings.Contains(string(encoded), "data_truncated") {
@@ -283,15 +335,23 @@ func assertCode(t *testing.T, err error, wanted contracts.ErrorCode) {
 }
 
 type scriptedProvider struct {
-	responses []contracts.ChatResponse
-	requests  []contracts.ChatRequest
-	delay     time.Duration
+	responses  []contracts.ChatResponse
+	chatErrors []error
+	requests   []contracts.ChatRequest
+	delay      time.Duration
 }
 
 func (p *scriptedProvider) Chat(_ context.Context, request contracts.ChatRequest) (contracts.ChatResponse, error) {
 	p.requests = append(p.requests, request)
 	if p.delay > 0 {
 		time.Sleep(p.delay)
+	}
+	if len(p.chatErrors) > 0 {
+		err := p.chatErrors[0]
+		p.chatErrors = p.chatErrors[1:]
+		if err != nil {
+			return contracts.ChatResponse{}, err
+		}
 	}
 	if len(p.responses) == 0 {
 		return contracts.ChatResponse{}, errors.New("unexpected chat call")

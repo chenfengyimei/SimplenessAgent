@@ -51,6 +51,20 @@ function openArtifacts(turn: Turn) {
               <button v-if="store.artifactCount(store.turnFor(message)) > 0" class="text-button" @click="store.viewPlan(store.turnFor(message)?.snapshot.task.id ?? '')">查看计划</button>
             </div>
 
+            <section v-if="store.turnFor(message)?.snapshot?.horizon" class="horizon-card">
+              <div>
+                <b>{{ store.turnFor(message)?.snapshot?.horizon?.plan.stages[store.turnFor(message)?.snapshot?.horizon?.current_stage_index ?? 0]?.stage_id ?? 'FINALIZE' }}</b>
+                <span>{{ store.turnFor(message)?.snapshot?.horizon?.steps_completed }}/{{ store.turnFor(message)?.snapshot?.horizon?.steps_planned }} 步 · 剩余 {{ 20 - (store.turnFor(message)?.snapshot?.horizon?.steps_planned ?? 0) }}</span>
+              </div>
+              <p>重规划 {{ store.turnFor(message)?.snapshot?.horizon?.replans_used }}/4 · Token {{ store.turnFor(message)?.snapshot?.horizon?.usage.input_tokens }} 入 / {{ store.turnFor(message)?.snapshot?.horizon?.usage.output_tokens }} 出</p>
+              <p v-if="store.turnFor(message)?.snapshot?.steps?.find(step => ['PENDING', 'READY', 'RUNNING'].includes(step.status))">当前步骤：{{ store.turnFor(message)?.snapshot?.steps?.find(step => ['PENDING', 'READY', 'RUNNING'].includes(step.status))?.title }}</p>
+              <p v-if="store.turnFor(message)?.snapshot?.horizon?.checkpoint_reason">{{ store.turnFor(message)?.snapshot?.horizon?.checkpoint_reason }}</p>
+              <div class="horizon-actions">
+                <button v-if="store.turnFor(message)?.snapshot?.horizon?.awaiting_checkpoint" class="primary-button" :disabled="store.busy" @click="store.resumeLongHorizon(store.turnFor(message)?.snapshot.task.id ?? '')">确认并继续下一阶段</button>
+                <button v-if="!['COMPLETED', 'CANCELLED', 'BLOCKED'].includes(store.turnFor(message)?.snapshot?.horizon?.status ?? '')" class="secondary-button" :disabled="store.busy" @click="store.cancelLongHorizon(store.turnFor(message)?.snapshot.task.id ?? '')">取消任务</button>
+              </div>
+            </section>
+
             <details>
               <summary>查看 Agent 操作记录</summary>
               <ol class="operation-log">
@@ -115,6 +129,10 @@ function openArtifacts(turn: Turn) {
             <option value="PLAN">计划模式（只读）</option>
             <option value="EDIT">编辑模式（需确认）</option>
             <option value="DEVELOPMENT">开发模式（直接执行）</option>
+          </select>
+          <select v-model="store.executionStrategy" :disabled="store.busy || !store.deploymentID" @change="store.enforceLongHorizonPermission">
+            <option value="SINGLE_PLAN">单次计划</option>
+            <option value="INCREMENTAL_HORIZON">长程 Agent</option>
           </select>
         </div>
         <button class="send-button" :disabled="!store.canSend" @click="store.sendMessage">发送 <span>↑</span></button>

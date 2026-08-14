@@ -89,23 +89,41 @@ type TaskBudget struct {
 	MaxModelInputTokens  int      `json:"max_model_input_tokens"`
 	MaxModelOutputTokens int      `json:"max_model_output_tokens"`
 	MaxCost              *float64 `json:"max_cost"`
+	MaxSegmentSteps      int      `json:"max_segment_steps,omitempty"`
 }
 
+type ExecutionStrategy string
+
+const (
+	ExecutionStrategySinglePlan         ExecutionStrategy = "SINGLE_PLAN"
+	ExecutionStrategyIncrementalHorizon ExecutionStrategy = "INCREMENTAL_HORIZON"
+)
+
+type StageCheckpointPolicy string
+
+const (
+	StageCheckpointNone       StageCheckpointPolicy = "NONE"
+	StageCheckpointKeyStages  StageCheckpointPolicy = "KEY_STAGES"
+	StageCheckpointEveryStage StageCheckpointPolicy = "EVERY_STAGE"
+)
+
 type TaskSpec struct {
-	Version             int                   `json:"version"`
-	TaskID              string                `json:"task_id"`
-	WorkspaceID         string                `json:"workspace_id"`
-	Title               string                `json:"title"`
-	Goal                string                `json:"goal"`
-	NonGoals            []string              `json:"non_goals"`
-	Constraints         []Constraint          `json:"constraints"`
-	AcceptanceCriteria  []AcceptanceCriterion `json:"acceptance_criteria"`
-	Assumptions         []string              `json:"assumptions"`
-	DeploymentID        string                `json:"deployment_id"`
-	PermissionProfileID string                `json:"permission_profile_id"`
-	Budget              TaskBudget            `json:"budget"`
-	AllowSubagents      bool                  `json:"allow_subagents"`
-	CreatedAt           time.Time             `json:"created_at"`
+	Version               int                   `json:"version"`
+	TaskID                string                `json:"task_id"`
+	WorkspaceID           string                `json:"workspace_id"`
+	Title                 string                `json:"title"`
+	Goal                  string                `json:"goal"`
+	NonGoals              []string              `json:"non_goals"`
+	Constraints           []Constraint          `json:"constraints"`
+	AcceptanceCriteria    []AcceptanceCriterion `json:"acceptance_criteria"`
+	Assumptions           []string              `json:"assumptions"`
+	DeploymentID          string                `json:"deployment_id"`
+	PermissionProfileID   string                `json:"permission_profile_id"`
+	Budget                TaskBudget            `json:"budget"`
+	AllowSubagents        bool                  `json:"allow_subagents"`
+	ExecutionStrategy     ExecutionStrategy     `json:"execution_strategy,omitempty"`
+	StageCheckpointPolicy StageCheckpointPolicy `json:"stage_checkpoint_policy,omitempty"`
+	CreatedAt             time.Time             `json:"created_at"`
 }
 
 type Workspace struct {
@@ -139,16 +157,16 @@ type Deployment struct {
 }
 
 type Task struct {
-	ID          string     `json:"id"`
-	Version     int        `json:"version"`
-	WorkspaceID string     `json:"workspace_id"`
-	ConversationID string   `json:"conversation_id,omitempty"`
-	Title       string     `json:"title"`
-	Goal        string     `json:"goal"`
-	Status      TaskStatus `json:"status"`
-	Spec        TaskSpec   `json:"spec"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID             string     `json:"id"`
+	Version        int        `json:"version"`
+	WorkspaceID    string     `json:"workspace_id"`
+	ConversationID string     `json:"conversation_id,omitempty"`
+	Title          string     `json:"title"`
+	Goal           string     `json:"goal"`
+	Status         TaskStatus `json:"status"`
+	Spec           TaskSpec   `json:"spec"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 // ConversationMessage is a durable user or assistant chat turn. A completed
@@ -163,16 +181,20 @@ type ConversationMessage struct {
 }
 
 type PlanVersion struct {
-	Version        int        `json:"version"`
-	PlanID         string     `json:"plan_id"`
-	TaskID         string     `json:"task_id"`
-	Revision       int        `json:"revision"`
-	ParentPlanID   string     `json:"parent_plan_id,omitempty"`
-	Reason         string     `json:"reason"`
-	Summary        string     `json:"summary"`
-	Steps          []StepSpec `json:"steps"`
-	CreatedByAgent string     `json:"created_by_agent_id"`
-	CreatedAt      time.Time  `json:"created_at"`
+	Version         int        `json:"version"`
+	PlanID          string     `json:"plan_id"`
+	TaskID          string     `json:"task_id"`
+	Revision        int        `json:"revision"`
+	ParentPlanID    string     `json:"parent_plan_id,omitempty"`
+	Reason          string     `json:"reason"`
+	Summary         string     `json:"summary"`
+	Steps           []StepSpec `json:"steps"`
+	CreatedByAgent  string     `json:"created_by_agent_id"`
+	CreatedAt       time.Time  `json:"created_at"`
+	HorizonID       string     `json:"horizon_id,omitempty"`
+	StageID         string     `json:"stage_id,omitempty"`
+	SegmentIndex    int        `json:"segment_index,omitempty"`
+	TerminalSegment bool       `json:"terminal_segment,omitempty"`
 }
 
 type StepBudget struct {
@@ -360,14 +382,15 @@ type HandoffEnvelope struct {
 // task state and verification. It records observed tool results, not a model
 // claim that task acceptance has been met.
 type AgentReport struct {
-	Version     int          `json:"version"`
-	TaskID      string       `json:"task_id"`
-	StepID      string       `json:"step_id"`
-	Summary     string       `json:"summary"`
-	ToolResults []ToolResult `json:"tool_results"`
-	Usage       TokenUsage   `json:"usage"`
-	Iterations  int          `json:"iterations"`
-	GeneratedAt time.Time    `json:"generated_at"`
+	Version               int          `json:"version"`
+	TaskID                string       `json:"task_id"`
+	StepID                string       `json:"step_id"`
+	Summary               string       `json:"summary"`
+	ToolResults           []ToolResult `json:"tool_results"`
+	Usage                 TokenUsage   `json:"usage"`
+	Iterations            int          `json:"iterations"`
+	ContextRecompilations int          `json:"context_recompilations,omitempty"`
+	GeneratedAt           time.Time    `json:"generated_at"`
 }
 
 type Artifact struct {

@@ -14,6 +14,25 @@ type ChatProvider interface {
 	ProbeCapabilities(ctx context.Context) CapabilitySnapshot
 }
 
+// TokenCounter is optional. Agent Core uses it when a provider/runtime exposes
+// the model's real tokenizer and falls back to a conservative local estimator
+// without widening the ChatProvider compatibility boundary.
+type TokenCounter interface {
+	CountTokens(ctx context.Context, req TokenCountRequest) (TokenCount, error)
+}
+
+type TokenCountRequest struct {
+	DeploymentID string           `json:"deployment_id"`
+	Messages     []Message        `json:"messages"`
+	Tools        []ToolDefinition `json:"tools,omitempty"`
+}
+
+type TokenCount struct {
+	Tokens int    `json:"tokens"`
+	Exact  bool   `json:"exact"`
+	Source string `json:"source"`
+}
+
 type ChatRequest struct {
 	DeploymentID string           `json:"deployment_id"`
 	Messages     []Message        `json:"messages"`
@@ -22,7 +41,8 @@ type ChatRequest struct {
 	// MaxOutputTokens is a provider-facing ceiling for one response. Keeping
 	// this on the request (rather than merely checking usage afterwards) is
 	// essential for local/small models: it leaves room for the next tool turn.
-	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	MaxOutputTokens int      `json:"max_output_tokens,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty"`
 }
 
 type Message struct {

@@ -284,6 +284,27 @@ func (s *Store) GetLatestPlan(ctx context.Context, taskID string) (contracts.Pla
 	return plan, err
 }
 
+func (s *Store) ListTaskPlans(ctx context.Context, taskID string) ([]contracts.PlanVersion, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT plan_json FROM plan_versions WHERE task_id=? ORDER BY revision`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	plans := []contracts.PlanVersion{}
+	for rows.Next() {
+		var serialized string
+		if err = rows.Scan(&serialized); err != nil {
+			return nil, err
+		}
+		var plan contracts.PlanVersion
+		if err = json.Unmarshal([]byte(serialized), &plan); err != nil {
+			return nil, err
+		}
+		plans = append(plans, plan)
+	}
+	return plans, rows.Err()
+}
+
 func (s *Store) GetSteps(ctx context.Context, planID string) ([]contracts.StepRuntime, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT step_id,plan_id,status,evidence_ids_json,artifact_ids_json,COALESCE(last_error_code,'') FROM steps WHERE plan_id=? ORDER BY step_id`, planID)
 	if err != nil {

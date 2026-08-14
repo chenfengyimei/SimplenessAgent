@@ -1,4 +1,5 @@
 export type PermissionMode = 'PLAN' | 'EDIT' | 'DEVELOPMENT'
+export type ExecutionStrategy = 'SINGLE_PLAN' | 'INCREMENTAL_HORIZON'
 
 export type Workspace = { id: string; name: string; root_path: string }
 
@@ -14,7 +15,20 @@ export type EventEntry = { event_type: string; timestamp: string; sequence: numb
 
 export type Step = { step_id: string; title?: string; status: string; artifact_ids: string[]; evidence_ids: string[] }
 
-export type Snapshot = { task: { id: string; title: string; goal: string; status: string }; steps: Step[]; events: EventEntry[] }
+export type Horizon = {
+  horizon_id: string
+  status: string
+  current_stage_index: number
+  steps_planned: number
+  steps_completed: number
+  replans_used: number
+  awaiting_checkpoint: boolean
+  checkpoint_reason?: string
+  plan: { stages: { stage_id: string; title: string; goal: string }[] }
+  usage: { input_tokens: number; output_tokens: number }
+}
+
+export type Snapshot = { task: { id: string; title: string; goal: string; status: string }; steps: Step[]; events: EventEntry[]; horizon?: Horizon }
 
 export type PendingWrite = { task_id: string; step_id: string; path: string; content: string }
 
@@ -40,6 +54,21 @@ export type Turn = {
 }
 
 export type ConversationView = { conversation: Conversation; messages: Message[]; turns: Turn[] }
+
+export type LongConversationCycle = {
+  view: ConversationView
+  task_id: string
+  cycle: {
+    status: string
+    stage: string
+    action: string
+    steps_planned: number
+    steps_completed: number
+    remaining_steps: number
+    awaiting_checkpoint: boolean
+    checkpoint_reason?: string
+  }
+}
 
 export type DiagnosticEntry = { timestamp: string; level: string; component: string; message: string; fields?: Record<string, string> }
 
@@ -72,4 +101,8 @@ export type PlanView = {
   reason: string
   steps: PlanStep[]
   created_at: string
+  horizon_id?: string
+  stage_id?: string
+  segment_index?: number
+  terminal_segment?: boolean
 }

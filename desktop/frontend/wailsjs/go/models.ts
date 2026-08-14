@@ -79,6 +79,7 @@ export namespace app {
 	    plan: contracts.PlanVersion;
 	    steps: contracts.StepRuntime[];
 	    events: contracts.EventEnvelope[];
+	    horizon?: contracts.HorizonState;
 	
 	    static createFrom(source: any = {}) {
 	        return new TaskSnapshot(source);
@@ -90,6 +91,7 @@ export namespace app {
 	        this.plan = this.convertValues(source["plan"], contracts.PlanVersion);
 	        this.steps = this.convertValues(source["steps"], contracts.StepRuntime);
 	        this.events = this.convertValues(source["events"], contracts.EventEnvelope);
+	        this.horizon = this.convertValues(source["horizon"], contracts.HorizonState);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -423,6 +425,183 @@ export namespace contracts {
 	        this.required = source["required"];
 	    }
 	}
+	export class HorizonStage {
+	    stage_id: string;
+	    title: string;
+	    goal: string;
+	    completion_gate: string;
+
+	    static createFrom(source: any = {}) {
+	        return new HorizonStage(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.stage_id = source["stage_id"];
+	        this.title = source["title"];
+	        this.goal = source["goal"];
+	        this.completion_gate = source["completion_gate"];
+	    }
+	}
+	export class HorizonPlan {
+	    version: number;
+	    horizon_id: string;
+	    task_id: string;
+	    stages: HorizonStage[];
+	    // Go type: time
+	    created_at: any;
+
+	    static createFrom(source: any = {}) {
+	        return new HorizonPlan(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.horizon_id = source["horizon_id"];
+	        this.task_id = source["task_id"];
+	        this.stages = this.convertValues(source["stages"], HorizonStage);
+	        this.created_at = this.convertValues(source["created_at"], null);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+	export class TokenUsage {
+	    input_tokens: number;
+	    output_tokens: number;
+
+	    static createFrom(source: any = {}) {
+	        return new TokenUsage(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.input_tokens = source["input_tokens"];
+	        this.output_tokens = source["output_tokens"];
+	    }
+	}
+	export class HorizonState {
+	    version: number;
+	    horizon_id: string;
+	    task_id: string;
+	    status: string;
+	    plan: HorizonPlan;
+	    current_stage_index: number;
+	    segment_index: number;
+	    steps_planned: number;
+	    steps_completed: number;
+	    replans_used: number;
+	    no_progress_cycles: number;
+	    last_evidence_count: number;
+	    latest_ledger_artifact_id?: string;
+	    latest_failure_artifact_id?: string;
+	    last_processed_plan_id?: string;
+	    awaiting_checkpoint: boolean;
+	    checkpoint_reason?: string;
+	    usage: TokenUsage;
+	    // Go type: time
+	    started_at: any;
+	    // Go type: time
+	    deadline_at: any;
+	    // Go type: time
+	    updated_at: any;
+
+	    static createFrom(source: any = {}) {
+	        return new HorizonState(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.horizon_id = source["horizon_id"];
+	        this.task_id = source["task_id"];
+	        this.status = source["status"];
+	        this.plan = this.convertValues(source["plan"], HorizonPlan);
+	        this.current_stage_index = source["current_stage_index"];
+	        this.segment_index = source["segment_index"];
+	        this.steps_planned = source["steps_planned"];
+	        this.steps_completed = source["steps_completed"];
+	        this.replans_used = source["replans_used"];
+	        this.no_progress_cycles = source["no_progress_cycles"];
+	        this.last_evidence_count = source["last_evidence_count"];
+	        this.latest_ledger_artifact_id = source["latest_ledger_artifact_id"];
+	        this.latest_failure_artifact_id = source["latest_failure_artifact_id"];
+	        this.last_processed_plan_id = source["last_processed_plan_id"];
+	        this.awaiting_checkpoint = source["awaiting_checkpoint"];
+	        this.checkpoint_reason = source["checkpoint_reason"];
+	        this.usage = this.convertValues(source["usage"], TokenUsage);
+	        this.started_at = this.convertValues(source["started_at"], null);
+	        this.deadline_at = this.convertValues(source["deadline_at"], null);
+	        this.updated_at = this.convertValues(source["updated_at"], null);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LongHorizonCycleResult {
+	    version: number;
+	    task_id: string;
+	    horizon_id: string;
+	    status: string;
+	    stage: string;
+	    action: string;
+	    steps_planned: number;
+	    steps_completed: number;
+	    remaining_steps: number;
+	    awaiting_checkpoint: boolean;
+	    checkpoint_reason?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new LongHorizonCycleResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.task_id = source["task_id"];
+	        this.horizon_id = source["horizon_id"];
+	        this.status = source["status"];
+	        this.stage = source["stage"];
+	        this.action = source["action"];
+	        this.steps_planned = source["steps_planned"];
+	        this.steps_completed = source["steps_completed"];
+	        this.remaining_steps = source["remaining_steps"];
+	        this.awaiting_checkpoint = source["awaiting_checkpoint"];
+	        this.checkpoint_reason = source["checkpoint_reason"];
+	    }
+	}
 	export class StepBudget {
 	    max_attempts: number;
 	    max_iterations: number;
@@ -509,6 +688,10 @@ export namespace contracts {
 	    created_by_agent_id: string;
 	    // Go type: time
 	    created_at: any;
+	    horizon_id?: string;
+	    stage_id?: string;
+	    segment_index?: number;
+	    terminal_segment?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new PlanVersion(source);
@@ -526,6 +709,10 @@ export namespace contracts {
 	        this.steps = this.convertValues(source["steps"], StepSpec);
 	        this.created_by_agent_id = source["created_by_agent_id"];
 	        this.created_at = this.convertValues(source["created_at"], null);
+	        this.horizon_id = source["horizon_id"];
+	        this.stage_id = source["stage_id"];
+	        this.segment_index = source["segment_index"];
+	        this.terminal_segment = source["terminal_segment"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -577,6 +764,7 @@ export namespace contracts {
 	    max_model_input_tokens: number;
 	    max_model_output_tokens: number;
 	    max_cost?: number;
+	    max_segment_steps?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new TaskBudget(source);
@@ -590,6 +778,7 @@ export namespace contracts {
 	        this.max_model_input_tokens = source["max_model_input_tokens"];
 	        this.max_model_output_tokens = source["max_model_output_tokens"];
 	        this.max_cost = source["max_cost"];
+	        this.max_segment_steps = source["max_segment_steps"];
 	    }
 	}
 	export class TaskSpec {
@@ -606,6 +795,8 @@ export namespace contracts {
 	    permission_profile_id: string;
 	    budget: TaskBudget;
 	    allow_subagents: boolean;
+	    execution_strategy?: string;
+	    stage_checkpoint_policy?: string;
 	    // Go type: time
 	    created_at: any;
 	
@@ -628,6 +819,8 @@ export namespace contracts {
 	        this.permission_profile_id = source["permission_profile_id"];
 	        this.budget = this.convertValues(source["budget"], TaskBudget);
 	        this.allow_subagents = source["allow_subagents"];
+	        this.execution_strategy = source["execution_strategy"];
+	        this.stage_checkpoint_policy = source["stage_checkpoint_policy"];
 	        this.created_at = this.convertValues(source["created_at"], null);
 	    }
 	
@@ -699,8 +892,9 @@ export namespace contracts {
 		    return a;
 		}
 	}
-	
-	
+
+
+
 	export class Workspace {
 	    id: string;
 	    version: number;
@@ -924,6 +1118,40 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class LongConversationCycle {
+	    view: ConversationView;
+	    task_id: string;
+	    cycle: contracts.LongHorizonCycleResult;
+
+	    static createFrom(source: any = {}) {
+	        return new LongConversationCycle(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.view = this.convertValues(source["view"], ConversationView);
+	        this.task_id = source["task_id"];
+	        this.cycle = this.convertValues(source["cycle"], contracts.LongHorizonCycleResult);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	export class PlanStepView {
 	    step_id: string;
@@ -953,6 +1181,10 @@ export namespace main {
 	    plan_id: string;
 	    task_id: string;
 	    revision: number;
+	    horizon_id?: string;
+	    stage_id?: string;
+	    segment_index?: number;
+	    terminal_segment?: boolean;
 	    summary: string;
 	    reason: string;
 	    steps: PlanStepView[];
@@ -968,6 +1200,10 @@ export namespace main {
 	        this.plan_id = source["plan_id"];
 	        this.task_id = source["task_id"];
 	        this.revision = source["revision"];
+	        this.horizon_id = source["horizon_id"];
+	        this.stage_id = source["stage_id"];
+	        this.segment_index = source["segment_index"];
+	        this.terminal_segment = source["terminal_segment"];
 	        this.summary = source["summary"];
 	        this.reason = source["reason"];
 	        this.steps = this.convertValues(source["steps"], PlanStepView);
@@ -994,4 +1230,3 @@ export namespace main {
 	}
 
 }
-

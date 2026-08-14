@@ -37,18 +37,24 @@ type ConversationTurn struct {
 	Report   TurnReportView   `json:"report"`
 }
 
+type LongConversationCycle struct {
+	View   ConversationView                 `json:"view"`
+	TaskID string                           `json:"task_id"`
+	Cycle  contracts.LongHorizonCycleResult `json:"cycle"`
+}
+
 type TurnReportView struct {
-	Summary          string                 `json:"summary"`
-	ToolName         string                 `json:"tool_name"`
-	Files            []string               `json:"files"`
-	Truncated        bool                   `json:"truncated"`
-	PendingWrite     *app.PendingWriteBatch `json:"pending_write,omitempty"`
-	PendingCommand   *app.PendingCommand    `json:"pending_command,omitempty"`
-	PendingQuestion  *PendingQuestion       `json:"pending_question,omitempty"`
-	InputTokens      int                    `json:"input_tokens"`
-	OutputTokens     int                    `json:"output_tokens"`
-	Iterations       int                    `json:"iterations"`
-	DurationSeconds  float64                `json:"duration_seconds"`
+	Summary         string                 `json:"summary"`
+	ToolName        string                 `json:"tool_name"`
+	Files           []string               `json:"files"`
+	Truncated       bool                   `json:"truncated"`
+	PendingWrite    *app.PendingWriteBatch `json:"pending_write,omitempty"`
+	PendingCommand  *app.PendingCommand    `json:"pending_command,omitempty"`
+	PendingQuestion *PendingQuestion       `json:"pending_question,omitempty"`
+	InputTokens     int                    `json:"input_tokens"`
+	OutputTokens    int                    `json:"output_tokens"`
+	Iterations      int                    `json:"iterations"`
+	DurationSeconds float64                `json:"duration_seconds"`
 }
 
 type PendingQuestion struct {
@@ -405,6 +411,141 @@ func (a *App) SendConversationMessage(conversationID, message, deploymentID, per
 	return a.executeConversationTurn(service, created, conversationID, deploymentID)
 }
 
+func (a *App) StartLongConversation(workspaceID, message, deploymentID, permissionMode string) (LongConversationCycle, error) {
+	service, err := a.core()
+	if err != nil {
+		return LongConversationCycle{}, err
+	}
+	message = strings.TrimSpace(message)
+	if message == "" || strings.TrimSpace(deploymentID) == "" {
+		return LongConversationCycle{}, contracts.NewError(contracts.ErrInvalidInput, "message and deployment are required for long-horizon mode")
+	}
+	mode, err := desktopPermissionMode(permissionMode)
+	if err != nil {
+		return LongConversationCycle{}, err
+	}
+	created, _, err := service.CreateLongHorizonTask(a.ctx, app.CreateLongHorizonTaskInput{DeploymentID: deploymentID, CreateTaskInput: app.CreateTaskInput{WorkspaceID: workspaceID, Title: compactTitle(message), Goal: message, PermissionMode: mode, AllowWriteProposals: mode == contracts.PermissionModeEdit}})
+	if err != nil {
+		return LongConversationCycle{}, err
+	}
+	if err = service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: created.ID, TurnTaskID: created.ID, Role: "user", Content: message}); err != nil {
+		return LongConversationCycle{}, err
+	}
+	return a.advanceLongConversation(service, created.ID, created.ID)
+}
+
+func (a *App) SendLongConversationMessage(conversationID, message, deploymentID, permissionMode string) (LongConversationCycle, error) {
+	service, err := a.core()
+	if err != nil {
+		return LongConversationCycle{}, err
+	}
+	message = strings.TrimSpace(message)
+	if message == "" || strings.TrimSpace(deploymentID) == "" {
+		return LongConversationCycle{}, contracts.NewError(contracts.ErrInvalidInput, "message and deployment are required for long-horizon mode")
+	}
+	view, viewErr := a.GetConversation(conversationID)
+	if viewErr == nil {
+		for index := len(view.Turns) - 1; index >= 0; index-- {
+			waiting := view.Turns[index].Snapshot
+			if waiting.Horizon == nil || waiting.Task.Status != contracts.TaskWaitingUser {
+				continue
+			}
+			if err = service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: waiting.Task.ID, Role: "user", Content: message}); err != nil {
+				return LongConversationCycle{}, err
+			}
+			if _, err = service.ResumeLongHorizonTask(a.ctx, waiting.Task.ID); err != nil {
+				return LongConversationCycle{}, err
+			}
+			return a.advanceLongConversation(service, waiting.Task.ID, conversationID)
+		}
+	}
+	conversation, err := service.GetTaskSnapshot(a.ctx, conversationID)
+	if err != nil {
+		return LongConversationCycle{}, err
+	}
+	mode, err := desktopPermissionMode(permissionMode)
+	if err != nil {
+		return LongConversationCycle{}, err
+	}
+	created, _, err := service.CreateLongHorizonTask(a.ctx, app.CreateLongHorizonTaskInput{DeploymentID: deploymentID, CreateTaskInput: app.CreateTaskInput{WorkspaceID: conversation.Task.WorkspaceID, Title: compactTitle(message), Goal: message, PermissionMode: mode, AllowWriteProposals: mode == contracts.PermissionModeEdit}})
+	if err != nil {
+		return LongConversationCycle{}, err
+	}
+	if err = service.SetConversationID(a.ctx, created.ID, conversationID); err != nil {
+		return LongConversationCycle{}, err
+	}
+	if err = service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: created.ID, Role: "user", Content: message}); err != nil {
+		return LongConversationCycle{}, err
+	}
+	return a.advanceLongConversation(service, created.ID, conversationID)
+}
+
+func (a *App) AdvanceLongConversation(taskID string) (LongConversationCycle, error) {
+	service, err := a.core()
+	if err != nil {
+		return LongConversationCycle{}, err
+	}
+	snapshot, err := service.GetTaskSnapshot(a.ctx, taskID)
+	if err != nil {
+		return LongConversationCycle{}, err
+	}
+	conversationID := snapshot.Task.ConversationID
+	if conversationID == "" {
+		conversationID = snapshot.Task.ID
+	}
+	return a.advanceLongConversation(service, taskID, conversationID)
+}
+
+func (a *App) ResumeLongConversation(taskID string) (LongConversationCycle, error) {
+	service, err := a.core()
+	if err != nil {
+		return LongConversationCycle{}, err
+	}
+	if _, err = service.ResumeLongHorizonTask(a.ctx, taskID); err != nil {
+		return LongConversationCycle{}, err
+	}
+	return a.AdvanceLongConversation(taskID)
+}
+
+func (a *App) CancelLongConversation(taskID string) (contracts.HorizonState, error) {
+	service, err := a.core()
+	if err != nil {
+		return contracts.HorizonState{}, err
+	}
+	return service.CancelLongHorizonTask(a.ctx, taskID)
+}
+
+func (a *App) GetLongHorizonStatus(taskID string) (contracts.HorizonState, error) {
+	service, err := a.core()
+	if err != nil {
+		return contracts.HorizonState{}, err
+	}
+	return service.GetLongHorizonStatus(a.ctx, taskID)
+}
+
+func (a *App) advanceLongConversation(service *app.Service, taskID, conversationID string) (LongConversationCycle, error) {
+	cycle, err := service.AdvanceLongHorizonTask(a.ctx, taskID)
+	if err != nil {
+		a.logError("long-horizon", "cycle failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": taskID})
+		return LongConversationCycle{}, err
+	}
+	runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": strings.ToLower(string(cycle.Status)), "message": fmt.Sprintf("长程 Agent：%s · %s", cycle.Stage, cycle.Action)})
+	if cycle.Status != contracts.HorizonActive || cycle.AwaitingCheckpoint {
+		message := fmt.Sprintf("长程任务已执行到 %s 阶段：%s。已规划 %d 步，完成 %d 步。", cycle.Stage, cycle.Action, cycle.StepsPlanned, cycle.StepsCompleted)
+		if cycle.CheckpointReason != "" {
+			message += "\n\n暂停原因：" + cycle.CheckpointReason
+		}
+		if err = service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: taskID, Role: "assistant", Content: message}); err != nil {
+			return LongConversationCycle{}, err
+		}
+	}
+	view, err := a.GetConversation(conversationID)
+	if err != nil {
+		return LongConversationCycle{}, err
+	}
+	return LongConversationCycle{View: view, TaskID: taskID, Cycle: cycle}, nil
+}
+
 func desktopPermissionMode(value string) (contracts.PermissionMode, error) {
 	if strings.TrimSpace(value) == "" {
 		return contracts.PermissionModeEdit, nil
@@ -431,7 +572,7 @@ func (a *App) executeConversationTurn(service *app.Service, created contracts.Ta
 		snapshot, err = service.RunModelPlan(a.ctx, app.RunModelStepInput{TaskID: created.ID, DeploymentID: deploymentID, ContextSections: sections})
 	}
 	if err != nil {
-		a.logError("agent", "turn execution failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, 		"deployment_id": deploymentID})
+		a.logError("agent", "turn execution failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": created.ID, "deployment_id": deploymentID})
 		runtime.EventsEmit(a.ctx, "agent:status", map[string]interface{}{"conversation_id": conversationID, "status": "error", "message": "本轮执行失败"})
 		response := "本轮 Agent 执行失败：" + userFacingError(err) + "。详细诊断已保存到“模型与设置 → 运行诊断”。"
 		if saveErr := service.SaveConversationMessage(a.ctx, contracts.ConversationMessage{ConversationID: conversationID, TurnTaskID: created.ID, Role: "assistant", Content: response}); saveErr != nil {
@@ -707,23 +848,27 @@ func (a *App) ReadTaskArtifact(taskID, kind string) (string, error) {
 }
 
 type PlanStepView struct {
-	StepID        string   `json:"step_id"`
-	Title         string   `json:"title"`
-	Goal          string   `json:"goal"`
-	Status        string   `json:"status"`
-	Dependencies  []string `json:"dependencies"`
-	AllowedTools  []string `json:"allowed_tools"`
-	Risk          string   `json:"risk"`
+	StepID       string   `json:"step_id"`
+	Title        string   `json:"title"`
+	Goal         string   `json:"goal"`
+	Status       string   `json:"status"`
+	Dependencies []string `json:"dependencies"`
+	AllowedTools []string `json:"allowed_tools"`
+	Risk         string   `json:"risk"`
 }
 
 type PlanViewData struct {
-	PlanID     string         `json:"plan_id"`
-	TaskID     string         `json:"task_id"`
-	Revision   int            `json:"revision"`
-	Summary    string         `json:"summary"`
-	Reason     string         `json:"reason"`
-	Steps      []PlanStepView `json:"steps"`
-	CreatedAt  time.Time      `json:"created_at"`
+	PlanID          string         `json:"plan_id"`
+	TaskID          string         `json:"task_id"`
+	Revision        int            `json:"revision"`
+	HorizonID       string         `json:"horizon_id,omitempty"`
+	StageID         string         `json:"stage_id,omitempty"`
+	SegmentIndex    int            `json:"segment_index,omitempty"`
+	TerminalSegment bool           `json:"terminal_segment,omitempty"`
+	Summary         string         `json:"summary"`
+	Reason          string         `json:"reason"`
+	Steps           []PlanStepView `json:"steps"`
+	CreatedAt       time.Time      `json:"created_at"`
 }
 
 func (a *App) GetTaskPlan(taskID string) (PlanViewData, error) {
@@ -753,12 +898,16 @@ func (a *App) GetTaskPlan(taskID string) (PlanViewData, error) {
 		})
 	}
 	return PlanViewData{
-		PlanID:    plan.PlanID,
-		TaskID:    plan.TaskID,
-		Revision:  plan.Revision,
-		Summary:   plan.Summary,
-		Reason:    plan.Reason,
-		Steps:     steps,
-		CreatedAt: plan.CreatedAt,
+		PlanID:          plan.PlanID,
+		TaskID:          plan.TaskID,
+		Revision:        plan.Revision,
+		HorizonID:       plan.HorizonID,
+		StageID:         plan.StageID,
+		SegmentIndex:    plan.SegmentIndex,
+		TerminalSegment: plan.TerminalSegment,
+		Summary:         plan.Summary,
+		Reason:          plan.Reason,
+		Steps:           steps,
+		CreatedAt:       plan.CreatedAt,
 	}, nil
 }

@@ -5,9 +5,13 @@ import {contracts} from '../models';
 import {app} from '../models';
 import {diagnostics} from '../models';
 
+export function AdvanceLongConversation(arg1:string):Promise<main.LongConversationCycle>;
+
 export function ApproveConversationCommand(arg1:string,arg2:string):Promise<main.ConversationView>;
 
 export function ApproveConversationWrite(arg1:string,arg2:string):Promise<main.ConversationView>;
+
+export function CancelLongConversation(arg1:string):Promise<contracts.HorizonState>;
 
 export function ConfigureOpenAICompatibleDeployment(arg1:string,arg2:string,arg3:string,arg4:string):Promise<contracts.Deployment>;
 
@@ -20,6 +24,8 @@ export function DataDir():Promise<string>;
 export function GeneratePlan(arg1:string,arg2:string):Promise<contracts.PlanVersion>;
 
 export function GetConversation(arg1:string):Promise<main.ConversationView>;
+
+export function GetLongHorizonStatus(arg1:string):Promise<contracts.HorizonState>;
 
 export function GetTaskPlan(arg1:string):Promise<main.PlanViewData>;
 
@@ -43,8 +49,14 @@ export function ReadTaskArtifact(arg1:string,arg2:string):Promise<string>;
 
 export function RecordClientLog(arg1:string,arg2:string,arg3:Record<string, string>):Promise<void>;
 
+export function ResumeLongConversation(arg1:string):Promise<main.LongConversationCycle>;
+
 export function RunAgent(arg1:string,arg2:string):Promise<app.TaskSnapshot>;
 
 export function SendConversationMessage(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ConversationView>;
 
+export function SendLongConversationMessage(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.LongConversationCycle>;
+
 export function StartConversation(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ConversationView>;
+
+export function StartLongConversation(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.LongConversationCycle>;

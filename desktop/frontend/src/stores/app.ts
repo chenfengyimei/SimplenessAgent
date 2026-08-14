@@ -7,7 +7,12 @@ import type {
   ConversationView,
   Deployment,
   DiagnosticEntry,
+  ExecutionStrategy,
+  LongConversationCycle,
+  PendingCommand,
+  PendingWriteBatch,
   PermissionMode,
+  Turn,
   Workspace,
 } from '../types'
 import { clientLog, knownMode } from '../utils'
@@ -25,6 +30,7 @@ export const useAppStore = defineStore('app', () => {
   const workspaceID = ref('')
   const deploymentID = ref('')
   const permissionMode = ref<PermissionMode>('EDIT')
+  const executionStrategy = ref<ExecutionStrategy>('SINGLE_PLAN')
   const prompt = ref('')
   const busy = ref(false)
   const error = ref('')
@@ -147,26 +153,84 @@ export const useAppStore = defineStore('app', () => {
     try {
       busy.value = true
       agentStatus.value = { status: 'thinking', message: 'Agent 正在理解需求…' }
-      const result = activeConversation.value
-        ? await window.go.main.App.SendConversationMessage(activeConversation.value.conversation.id, text, deploymentID.value, permissionMode.value)
-        : await window.go.main.App.StartConversation(workspaceID.value, text, deploymentID.value, permissionMode.value)
-      const next = result as ConversationView
+      let next: ConversationView
+      if (executionStrategy.value === 'INCREMENTAL_HORIZON') {
+        const first = activeConversation.value
+          ? await window.go.main.App.SendLongConversationMessage(activeConversation.value.conversation.id, text, deploymentID.value, permissionMode.value)
+          : await window.go.main.App.StartLongConversation(workspaceID.value, text, deploymentID.value, permissionMode.value)
+        next = await runLongCycles(first as LongConversationCycle)
+      } else {
+        const result = activeConversation.value
+          ? await window.go.main.App.SendConversationMessage(activeConversation.value.conversation.id, text, deploymentID.value, permissionMode.value)
+          : await window.go.main.App.StartConversation(workspaceID.value, text, deploymentID.value, permissionMode.value)
+        next = result as ConversationView
+      }
       if (!next?.conversation?.id || !Array.isArray(next.messages)) throw new Error('桌面核心返回了不完整的会话数据；详情已写入诊断日志。')
       activeConversation.value = next; notice.value = '本轮已完成，执行过程和结果已保存到会话。'; await refresh()
     } catch (cause) { clientLog('error', '发送消息或渲染本轮结果失败', { conversation_id: activeConversation.value?.conversation?.id ?? '', permission_mode: permissionMode.value, error: String(cause) }); fail(cause) }
     finally { busy.value = false; agentStatus.value = null; await scrollChat() }
   }
 
-  async function approveWrite(turn?: { report?: { pending_write?: PendingWriteBatch } }) {
+  async function runLongCycles(initial: LongConversationCycle) {
+    let result = initial
+    for (let cycle = 0; cycle < 100 && result.cycle.status === 'ACTIVE' && !result.cycle.awaiting_checkpoint; cycle++) {
+      agentStatus.value = { status: 'long-horizon', message: `${result.cycle.stage} · ${result.cycle.action} · ${result.cycle.steps_completed}/${result.cycle.steps_planned}` }
+      result = await window.go.main.App.AdvanceLongConversation(result.task_id) as LongConversationCycle
+      activeConversation.value = result.view
+      await scrollChat()
+    }
+    return result.view
+  }
+
+  async function resumeLongHorizon(taskID: string) {
+    if (!taskID || busy.value) return
+    try {
+      busy.value = true; clearFeedback()
+      const first = await window.go.main.App.ResumeLongConversation(taskID) as LongConversationCycle
+      activeConversation.value = await runLongCycles(first)
+      notice.value = '长程任务已从阶段检查点继续。'
+      await refresh()
+    } catch (cause) { fail(cause) }
+    finally { busy.value = false; agentStatus.value = null; await scrollChat() }
+  }
+
+  async function cancelLongHorizon(taskID: string) {
+    if (!taskID || busy.value) return
+    try {
+      busy.value = true; clearFeedback()
+      await window.go.main.App.CancelLongConversation(taskID)
+      if (activeConversation.value) activeConversation.value = await window.go.main.App.GetConversation(activeConversation.value.conversation.id) as ConversationView
+      notice.value = '长程任务已取消。'
+      await refresh()
+    } catch (cause) { fail(cause) }
+    finally { busy.value = false; agentStatus.value = null; await scrollChat() }
+  }
+
+  function enforceLongHorizonPermission() {
+    if (executionStrategy.value === 'INCREMENTAL_HORIZON' && permissionMode.value === 'DEVELOPMENT') {
+      permissionMode.value = 'EDIT'
+      notice.value = '长程模式已切换到需确认的编辑权限。'
+    }
+  }
+
+  async function approveWrite(turn?: Turn) {
     const pending = pendingWriteFor(turn); if (!pending || busy.value) return
-    try { busy.value = true; clearFeedback(); activeConversation.value = await window.go.main.App.ApproveConversationWrite(pending.task_id, pending.step_id) as ConversationView; notice.value = '已批准工作区修改，系统已执行并完成验证。'; await refresh() }
+    try {
+      busy.value = true; clearFeedback(); activeConversation.value = await window.go.main.App.ApproveConversationWrite(pending.task_id, pending.step_id) as ConversationView
+      if (turn?.snapshot?.horizon) activeConversation.value = await runLongCycles(await window.go.main.App.AdvanceLongConversation(pending.task_id) as LongConversationCycle)
+      notice.value = '已批准工作区修改，系统已执行并完成验证。'; await refresh()
+    }
     catch (cause) { clientLog('error', '批准工作区修改失败', { error: String(cause) }); fail(cause) }
     finally { busy.value = false; await scrollChat() }
   }
 
-  async function approveCommand(turn?: { report?: { pending_command?: PendingCommand } }) {
+  async function approveCommand(turn?: Turn) {
     const pending = pendingCommandFor(turn); if (!pending || busy.value) return
-    try { busy.value = true; clearFeedback(); activeConversation.value = await window.go.main.App.ApproveConversationCommand(pending.task_id, pending.step_id) as ConversationView; notice.value = '已批准项目命令，系统已执行并保存输出。'; await refresh() }
+    try {
+      busy.value = true; clearFeedback(); activeConversation.value = await window.go.main.App.ApproveConversationCommand(pending.task_id, pending.step_id) as ConversationView
+      if (turn?.snapshot?.horizon) activeConversation.value = await runLongCycles(await window.go.main.App.AdvanceLongConversation(pending.task_id) as LongConversationCycle)
+      notice.value = '已批准项目命令，系统已执行并保存输出。'; await refresh()
+    }
     catch (cause) { clientLog('error', '批准项目命令失败', { error: String(cause) }); fail(cause) }
     finally { busy.value = false; await scrollChat() }
   }
@@ -231,7 +295,7 @@ export const useAppStore = defineStore('app', () => {
 
   return {
     workspaces, deployments, conversations, activeConversation, activePanel,
-    workspaceID, deploymentID, permissionMode, prompt, busy, error, notice,
+    workspaceID, deploymentID, permissionMode, executionStrategy, prompt, busy, error, notice,
     collapsed, chatBodyEl, showWorkspaceForm, workspaceName, workspacePath,
     deploymentName, deploymentEndpoint, deploymentModel, apiKey, providerTemplate,
     capability, diagnosticLogs, agentStatus,
@@ -245,6 +309,6 @@ export const useAppStore = defineStore('app', () => {
     scrollChat, refresh, refreshDiagnosticLogs, openConversation, sendMessage,
     approveWrite, approveCommand, applyProviderTemplate, configureModel,
     probeModel, createWorkspace, viewArtifact, closeArtifactViewer,
-    viewPlan, closePlanViewer, setupAgentStatusListener,
+    viewPlan, closePlanViewer, setupAgentStatusListener, resumeLongHorizon, cancelLongHorizon, enforceLongHorizonPermission,
   }
 })

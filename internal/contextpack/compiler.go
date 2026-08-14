@@ -5,9 +5,9 @@ package contextpack
 import (
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/xm/simplenessagent/internal/task"
+	"github.com/xm/simplenessagent/internal/tokenbudget"
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
 
@@ -79,11 +79,7 @@ func Compile(input Input) (Result, error) {
 }
 
 func estimateTokens(content string) int {
-	runes := utf8.RuneCountInString(content)
-	if runes == 0 {
-		return 0
-	}
-	return (runes + 3) / 4
+	return tokenbudget.EstimateText(content)
 }
 
 func sourceKey(section contracts.ContextSection) string {
@@ -136,11 +132,15 @@ func CompressHistory(messages []contracts.ContextSection, keepRecent int, summar
 		}
 		builder.WriteString("\n")
 	}
+	sources := make([]string, 0, foldCount)
+	for _, msg := range messages[:foldCount] {
+		sources = append(sources, msg.SourceRefs...)
+	}
 	summary := contracts.ContextSection{
-		Type:        summaryType,
-		Content:     builder.String(),
-		SourceRefs:  []string{"compressed-history"},
-		Priority:    95,
+		Type:       summaryType,
+		Content:    builder.String(),
+		SourceRefs: sortedUnique(sources),
+		Priority:   95,
 	}
 	result := make([]contracts.ContextSection, 0, keepRecent+1)
 	result = append(result, summary)

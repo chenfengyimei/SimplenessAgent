@@ -549,12 +549,15 @@ func validatePlanPermission(plan contracts.PlanVersion, item contracts.Task) err
 
 type CreateTaskInput struct {
 	WorkspaceID, Title, Goal string
+	DeploymentID             string
 	Constraints              []contracts.Constraint
 	AcceptanceCriteria       []contracts.AcceptanceCriterion
 	Budget                   contracts.TaskBudget
 	AllowSubagents           bool
 	AllowWriteProposals      bool
 	PermissionMode           contracts.PermissionMode
+	ExecutionStrategy        contracts.ExecutionStrategy
+	StageCheckpointPolicy    contracts.StageCheckpointPolicy
 }
 
 // WriteFileInput is the complete, parameter-bound request for a file write.
@@ -1202,21 +1205,57 @@ func (s *Service) CreateTask(ctx context.Context, input CreateTaskInput) (contra
 	if len(input.AcceptanceCriteria) == 0 {
 		input.AcceptanceCriteria = []contracts.AcceptanceCriterion{{ID: "ac_evidence", Type: contracts.AcceptanceEvidenceExists, Description: "侦察报告已生成", Spec: map[string]interface{}{"kind": "RECON_REPORT"}}}
 	}
-	if input.Budget.MaxSteps == 0 {
-		input.Budget.MaxSteps = 8
+	strategy := input.ExecutionStrategy
+	if strategy == "" {
+		strategy = contracts.ExecutionStrategySinglePlan
 	}
-	if input.Budget.MaxDurationMS == 0 {
-		input.Budget.MaxDurationMS = int64((30 * time.Minute).Milliseconds())
+	if strategy != contracts.ExecutionStrategySinglePlan && strategy != contracts.ExecutionStrategyIncrementalHorizon {
+		return contracts.Task{}, contracts.PlanVersion{}, contracts.NewError(contracts.ErrInvalidInput, "unknown task execution strategy")
 	}
-	if input.Budget.MaxReplans == 0 {
-		input.Budget.MaxReplans = 2
+	checkpointPolicy := input.StageCheckpointPolicy
+	checkpointPolicyWasEmpty := checkpointPolicy == ""
+	if checkpointPolicyWasEmpty {
+		checkpointPolicy = contracts.StageCheckpointNone
+	}
+	if strategy == contracts.ExecutionStrategyIncrementalHorizon {
+		if input.Budget.MaxSteps == 0 {
+			input.Budget.MaxSteps = 20
+		}
+		if input.Budget.MaxDurationMS == 0 {
+			input.Budget.MaxDurationMS = int64((2 * time.Hour).Milliseconds())
+		}
+		if input.Budget.MaxReplans == 0 {
+			input.Budget.MaxReplans = 4
+		}
+		if input.Budget.MaxSegmentSteps == 0 {
+			input.Budget.MaxSegmentSteps = 4
+		}
+		if input.Budget.MaxSteps < 1 || input.Budget.MaxSteps > 20 || input.Budget.MaxReplans < 0 || input.Budget.MaxReplans > 4 || input.Budget.MaxSegmentSteps < 1 || input.Budget.MaxSegmentSteps > 4 || input.Budget.MaxDurationMS < 1 || input.Budget.MaxDurationMS > int64((2*time.Hour).Milliseconds()) {
+			return contracts.Task{}, contracts.PlanVersion{}, contracts.NewError(contracts.ErrBudgetExceeded, "long-horizon budget exceeds the 2 hour, 20 step, 4 replan, or 4 step segment limit")
+		}
+		if checkpointPolicyWasEmpty {
+			checkpointPolicy = contracts.StageCheckpointKeyStages
+		}
+	} else {
+		if input.Budget.MaxSteps == 0 {
+			input.Budget.MaxSteps = 8
+		}
+		if input.Budget.MaxDurationMS == 0 {
+			input.Budget.MaxDurationMS = int64((30 * time.Minute).Milliseconds())
+		}
+		if input.Budget.MaxReplans == 0 {
+			input.Budget.MaxReplans = 2
+		}
+	}
+	if checkpointPolicy != contracts.StageCheckpointNone && checkpointPolicy != contracts.StageCheckpointKeyStages && checkpointPolicy != contracts.StageCheckpointEveryStage {
+		return contracts.Task{}, contracts.PlanVersion{}, contracts.NewError(contracts.ErrInvalidInput, "unknown stage checkpoint policy")
 	}
 	permissionMode, err := normalizedPermissionMode(input.PermissionMode)
 	if err != nil {
 		return contracts.Task{}, contracts.PlanVersion{}, err
 	}
 	now := time.Now().UTC()
-	spec := contracts.TaskSpec{Version: contracts.SchemaVersion, TaskID: task.NewID("tsk"), WorkspaceID: input.WorkspaceID, Title: input.Title, Goal: input.Goal, Constraints: input.Constraints, AcceptanceCriteria: input.AcceptanceCriteria, PermissionProfileID: string(permissionMode), Budget: input.Budget, AllowSubagents: input.AllowSubagents, CreatedAt: now}
+	spec := contracts.TaskSpec{Version: contracts.SchemaVersion, TaskID: task.NewID("tsk"), WorkspaceID: input.WorkspaceID, Title: input.Title, Goal: input.Goal, Constraints: input.Constraints, AcceptanceCriteria: input.AcceptanceCriteria, DeploymentID: input.DeploymentID, PermissionProfileID: string(permissionMode), Budget: input.Budget, AllowSubagents: input.AllowSubagents, ExecutionStrategy: strategy, StageCheckpointPolicy: checkpointPolicy, CreatedAt: now}
 	item := contracts.Task{ID: spec.TaskID, Version: contracts.SchemaVersion, WorkspaceID: spec.WorkspaceID, Title: spec.Title, Goal: spec.Goal, Status: contracts.TaskDraft, Spec: spec, CreatedAt: now, UpdatedAt: now}
 	event, err := s.newEvent(ctx, item.ID, "TASK_CREATED", map[string]interface{}{"title": item.Title})
 	if err != nil {
@@ -1793,9 +1832,14 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
-	contextPackage, err := modelContext(item, planVersion, step, deployment.ID, input.ContextPackage, input.ContextSections, contextLimit)
+	contextPackage, omittedContext, err := modelContext(item, planVersion, step, deployment.ID, input.ContextPackage, input.ContextSections, contextLimit)
 	if err != nil {
 		return TaskSnapshot{}, err
+	}
+	if item.Spec.ExecutionStrategy == contracts.ExecutionStrategyIncrementalHorizon {
+		if err = s.persistContextManifest(ctx, item, step.StepID, contextPackage, omittedContext); err != nil {
+			return TaskSnapshot{}, err
+		}
 	}
 	executor, err := worker.New(provider, registry)
 	if err != nil {
@@ -1817,7 +1861,17 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	if _, err = s.CheckpointTask(ctx, item.ID); err != nil {
 		return TaskSnapshot{}, err
 	}
-	result, runErr := executor.Run(ctx, worker.Input{DeploymentID: deployment.ID, Step: step, PermissionMode: permissionMode, ContextPackage: &contextPackage, Skills: input.Skills, EffectiveBudget: effectiveBudget, ReliableContextTokens: contextWindow})
+	workerInput := worker.Input{DeploymentID: deployment.ID, Step: step, PermissionMode: permissionMode, ContextPackage: &contextPackage, Skills: input.Skills, EffectiveBudget: effectiveBudget, ReliableContextTokens: contextWindow}
+	if item.Spec.ExecutionStrategy == contracts.ExecutionStrategyIncrementalHorizon {
+		if profile, profileErr := s.store.GetModelRoleProfile(ctx, deployment.ID, contracts.ModelRoleExecutor); profileErr == nil {
+			workerInput.MaxToolCallsPerResponse = profile.MaxToolCalls
+			workerInput.Temperature = &profile.Temperature
+			if profile.MaxOutputTokens > 0 && workerInput.EffectiveBudget.MaxOutputTokens > profile.MaxOutputTokens {
+				workerInput.EffectiveBudget.MaxOutputTokens = profile.MaxOutputTokens
+			}
+		}
+	}
+	result, runErr := executor.Run(ctx, workerInput)
 	for _, toolResult := range result.ToolResults {
 		if directIntentIDs[toolResult.ToolCallID] {
 			if updateErr := s.store.UpdateToolIntentStatus(ctx, toolResult.ToolCallID, toolResult.Status); updateErr != nil && runErr == nil {
@@ -1874,7 +1928,11 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 			return s.CheckpointTask(ctx, item.ID)
 		}
 		_ = s.transitionStep(ctx, item.ID, step.StepID, contracts.StepRunning, contracts.StepFailed, "STEP_STATUS_CHANGED")
-		_ = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskFailed, "TASK_STATUS_CHANGED")
+		if item.Spec.ExecutionStrategy == contracts.ExecutionStrategyIncrementalHorizon {
+			_ = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskPaused, "TASK_LONG_HORIZON_PAUSED")
+		} else {
+			_ = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskFailed, "TASK_STATUS_CHANGED")
+		}
 		return TaskSnapshot{}, runErr
 	}
 	if err = s.persistAgentReport(ctx, item, step.StepID, result); err != nil {
@@ -1898,6 +1956,9 @@ func (s *Service) completeModelStep(ctx context.Context, item contracts.Task, pl
 		if !updated.Status.Terminal() {
 			return s.CheckpointTask(ctx, item.ID)
 		}
+	}
+	if item.Spec.ExecutionStrategy == contracts.ExecutionStrategyIncrementalHorizon {
+		return s.CheckpointTask(ctx, item.ID)
 	}
 	if err = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskVerifying, "TASK_STATUS_CHANGED"); err != nil {
 		return TaskSnapshot{}, err
@@ -1952,13 +2013,13 @@ func findStep(planVersion contracts.PlanVersion, stepID string) (contracts.StepS
 	return contracts.StepSpec{}, false
 }
 
-func modelContext(item contracts.Task, planVersion contracts.PlanVersion, step contracts.StepSpec, deploymentID string, supplied *contracts.ContextPackage, extra []contracts.ContextSection, limitOverride int) (contracts.ContextPackage, error) {
+func modelContext(item contracts.Task, planVersion contracts.PlanVersion, step contracts.StepSpec, deploymentID string, supplied *contracts.ContextPackage, extra []contracts.ContextSection, limitOverride int) (contracts.ContextPackage, []contracts.ContextSection, error) {
 	if supplied != nil {
-		return *supplied, nil
+		return *supplied, nil, nil
 	}
 	encoded, err := json.Marshal(map[string]interface{}{"task_id": item.ID, "goal": item.Goal, "constraints": item.Spec.Constraints, "plan_id": planVersion.PlanID, "step_id": step.StepID, "step_goal": step.Goal})
 	if err != nil {
-		return contracts.ContextPackage{}, err
+		return contracts.ContextPackage{}, nil, err
 	}
 	limit := step.Budget.MaxInputTokens
 	if limitOverride > 0 && (limit <= 0 || limitOverride < limit) {
@@ -1972,9 +2033,33 @@ func modelContext(item contracts.Task, planVersion contracts.PlanVersion, step c
 	sections = append(sections, extra...)
 	compiled, err := contextpack.Compile(contextpack.Input{DeploymentID: deploymentID, Role: "EXECUTOR", TaskID: item.ID, StepID: step.StepID, BudgetLimit: limit, Sections: sections})
 	if err != nil {
-		return contracts.ContextPackage{}, err
+		return contracts.ContextPackage{}, nil, err
 	}
-	return compiled.Package, nil
+	return compiled.Package, compiled.Omitted, nil
+}
+
+func (s *Service) persistContextManifest(ctx context.Context, item contracts.Task, stepID string, contextPackage contracts.ContextPackage, omitted []contracts.ContextSection) error {
+	type source struct {
+		Type            string   `json:"type"`
+		SourceRefs      []string `json:"source_refs"`
+		EstimatedTokens int      `json:"estimated_tokens"`
+	}
+	selection := func(sections []contracts.ContextSection) []source {
+		result := make([]source, 0, len(sections))
+		for _, section := range sections {
+			result = append(result, source{Type: section.Type, SourceRefs: append([]string{}, section.SourceRefs...), EstimatedTokens: section.EstimatedTokens})
+		}
+		return result
+	}
+	encoded, err := json.MarshalIndent(map[string]interface{}{"context_id": contextPackage.ID, "compiler_version": contextPackage.CompilerVersion, "budget": contextPackage.Budget, "selected": selection(contextPackage.Sections), "omitted": selection(omitted)}, "", "  ")
+	if err != nil {
+		return err
+	}
+	artifactItem, err := s.artifactStore.Put("CONTEXT_MANIFEST", "application/json", "selected and omitted model context sources", item.ID, stepID, encoded)
+	if err != nil {
+		return err
+	}
+	return s.store.SaveArtifact(ctx, artifactItem)
 }
 
 const defaultReliableContextWindow = 8192
@@ -2023,7 +2108,13 @@ func usableContextBudget(step contracts.StepSpec, mode contracts.PermissionMode,
 	if responseReserve < 256 {
 		responseReserve = 256
 	}
-	available := window - worker.PromptOverheadTokens(step, mode, definitions) - responseReserve - 256
+	// Compile task context to an 80% prompt ceiling. The Worker recounts the
+	// exact rendered request and hard-stops at 90%.
+	promptCeiling := window * 8 / 10
+	available := promptCeiling - worker.PromptOverheadTokens(step, mode, definitions)
+	if responseHeadroom := window - promptCeiling; responseHeadroom < responseReserve+256 {
+		available -= responseReserve + 256 - responseHeadroom
+	}
 	if available < 128 {
 		return 0, contracts.NewError(contracts.ErrContextOverflow, fmt.Sprintf("configured model context is too small for this task's tool interface (window=%d, tools=%d); use plan mode, reduce tools, or configure a larger context", window, len(definitions)))
 	}
@@ -2031,7 +2122,7 @@ func usableContextBudget(step contracts.StepSpec, mode contracts.PermissionMode,
 }
 
 func (s *Service) persistAgentReport(ctx context.Context, item contracts.Task, stepID string, result worker.Result) error {
-	report := contracts.AgentReport{Version: contracts.SchemaVersion, TaskID: item.ID, StepID: stepID, Summary: result.Text, ToolResults: result.ToolResults, Usage: result.Usage, Iterations: result.Iterations, GeneratedAt: time.Now().UTC()}
+	report := contracts.AgentReport{Version: contracts.SchemaVersion, TaskID: item.ID, StepID: stepID, Summary: result.Text, ToolResults: result.ToolResults, Usage: result.Usage, Iterations: result.Iterations, ContextRecompilations: result.ContextRecompilations, GeneratedAt: time.Now().UTC()}
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err
@@ -2208,10 +2299,11 @@ func registryHandler(registry *tool.Registry, name string) tool.Handler { // nar
 }
 
 type TaskSnapshot struct {
-	Task   contracts.Task            `json:"task"`
-	Plan   contracts.PlanVersion     `json:"plan"`
-	Steps  []contracts.StepRuntime   `json:"steps"`
-	Events []contracts.EventEnvelope `json:"events"`
+	Task    contracts.Task            `json:"task"`
+	Plan    contracts.PlanVersion     `json:"plan"`
+	Steps   []contracts.StepRuntime   `json:"steps"`
+	Events  []contracts.EventEnvelope `json:"events"`
+	Horizon *contracts.HorizonState   `json:"horizon,omitempty"`
 }
 
 func (s *Service) GetTaskSnapshot(ctx context.Context, taskID string) (TaskSnapshot, error) {
@@ -2231,7 +2323,13 @@ func (s *Service) GetTaskSnapshot(ctx context.Context, taskID string) (TaskSnaps
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
-	return TaskSnapshot{Task: item, Plan: activePlan, Steps: steps, Events: events}, nil
+	result := TaskSnapshot{Task: item, Plan: activePlan, Steps: steps, Events: events}
+	if item.Spec.ExecutionStrategy == contracts.ExecutionStrategyIncrementalHorizon {
+		if horizonState, horizonErr := s.store.GetHorizon(ctx, taskID); horizonErr == nil {
+			result.Horizon = &horizonState
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) newEvent(ctx context.Context, taskID, eventType string, payload map[string]interface{}) (contracts.EventEnvelope, error) {

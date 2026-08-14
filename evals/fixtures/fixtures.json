@@ -24,7 +24,7 @@
           "path": "../../../etc/passwd",
           "content": "malicious",
           "expected_content_hash": "sha256:0000"
-        },
+        }
       },
       "expected_result": "PATH_ESCAPE_REJECTED"
     },
