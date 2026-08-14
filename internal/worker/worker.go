@@ -178,35 +178,53 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		if cumulativeExceeded(stepBudget, result.Usage) {
 			return result, contracts.NewError(contracts.ErrBudgetExceeded, "cumulative token budget exceeded")
 		}
-		if iteration+1 == input.Step.Budget.MaxIterations && successfulReadBatch(validatedCalls, allowed, result.ToolResults[batchStart:]) {
+		if finalizable, stableFailures := finalizableReadBatch(validatedCalls, allowed, result.ToolResults[batchStart:]); iteration+1 == input.Step.Budget.MaxIterations && finalizable {
 			// A tool call consumes a model iteration. Small models often use the last
-			// permitted turn for one final, useful read and therefore have no turn
-			// left to paraphrase evidence the controller already persisted. Close only
-			// this safe case deterministically; writes, commands, failed reads and
+			// permitted turn for one final read outcome and therefore have no turn left
+			// to paraphrase evidence the controller already persisted. A stable,
+			// non-retryable negative result (for example, "not a Git repository") is
+			// also discovery evidence. Writes, commands, retryable failures and
 			// evidence-free exhaustion still fail closed.
-			result.Text = finalReadEvidenceSummary(input.Step)
+			result.Text = finalReadEvidenceSummary(input, stableFailures)
 			return result, nil
 		}
 	}
 	return result, contracts.NewError(contracts.ErrBudgetExceeded, "step iteration budget exceeded")
 }
 
-func successfulReadBatch(calls []validatedToolCall, allowed []contracts.ToolDefinition, results []contracts.ToolResult) bool {
+func finalizableReadBatch(calls []validatedToolCall, allowed []contracts.ToolDefinition, results []contracts.ToolResult) (bool, int) {
 	if len(calls) == 0 || len(results) != len(calls) {
-		return false
+		return false, 0
 	}
+	stableFailures := 0
 	for index, call := range calls {
 		definition, found := toolDefinition(allowed, call.call.Name)
-		if !found || definition.RiskClass != contracts.RiskRead || results[index].Status != "SUCCEEDED" {
-			return false
+		if !found || definition.RiskClass != contracts.RiskRead {
+			return false, 0
+		}
+		switch results[index].Status {
+		case "SUCCEEDED":
+		case "FAILED":
+			if results[index].Error == nil || results[index].Error.Retryable {
+				return false, 0
+			}
+			stableFailures++
+		default:
+			return false, 0
 		}
 	}
-	return true
+	return true, stableFailures
 }
 
-func finalReadEvidenceSummary(step contracts.StepSpec) string {
-	if containsHan(step.Title + step.Goal) {
+func finalReadEvidenceSummary(input Input, stableFailures int) string {
+	if containsHan(input.Step.Title + input.Step.Goal + renderContext(input)) {
+		if stableFailures > 0 {
+			return fmt.Sprintf("只读工具在本步骤的最后允许回合产生了新的可验证结果，其中 %d 项为不可重试的负面结果；完整工具结果已持久化，供验收器和后续步骤引用。", stableFailures)
+		}
 		return "只读工具在本步骤的最后允许回合产生了新的可验证证据；完整工具结果已持久化，供验收器和后续步骤引用。"
+	}
+	if stableFailures > 0 {
+		return fmt.Sprintf("Read-only tools produced new verifiable outcomes on the step's final allowed turn, including %d stable negative result(s); the complete tool results are persisted for acceptance and subsequent steps.", stableFailures)
 	}
 	return "Read-only tools produced new verifiable evidence on the step's final allowed turn; the complete tool results are persisted for acceptance and subsequent steps."
 }

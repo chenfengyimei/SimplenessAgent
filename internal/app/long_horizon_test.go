@@ -253,14 +253,82 @@ func TestLongHorizonResumeReplansAfterFailedExecutorStep(t *testing.T) {
 	}
 }
 
-func TestLongHorizonCompletesStepFromFreshReadEvidenceOnFinalExecutorTurn(t *testing.T) {
+func TestLongHorizonAutomaticallyReplansFirstExecutorIterationExhaustion(t *testing.T) {
 	ctx := context.Background()
 	provider := &longHorizonProvider{responses: []contracts.ChatResponse{
-		{Text: `{"summary":"discover","terminal_segment":true,"steps":[{"ref":"scan","title":"扫描项目","goal":"定位相关文件","tool_intents":["list_files"],"acceptance_intent":"取得文件证据"}]}`},
+		{Text: `{"summary":"discover","terminal_segment":true,"steps":[{"ref":"first","title":"First","goal":"Inspect the root","tool_intents":["list_files"],"acceptance_intent":"Root is inspected"}]}`},
+		{Text: `{"summary":"replacement","terminal_segment":true,"steps":[{"ref":"replacement","title":"Replacement","goal":"Inspect another project surface","tool_intents":["list_files"],"acceptance_intent":"Additional files are inspected"}]}`},
+	}}
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) { return provider, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspaceItem, err := service.CreateWorkspace(ctx, "auto-replan", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "small", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "small", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateLongHorizonTask(ctx, CreateLongHorizonTaskInput{DeploymentID: deployment.ID, CreateTaskInput: CreateTaskInput{WorkspaceID: workspaceItem.ID, Title: "auto replan", Goal: "inspect project", PermissionMode: contracts.PermissionModePlan, StageCheckpointPolicy: contracts.StageCheckpointNone}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.AdvanceLongHorizonTask(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	activePlan, err := service.GetLatestPlan(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := service.GetLongHorizonStatus(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepID := activePlan.Steps[0].StepID
+	if err = service.transitionTask(ctx, created.ID, contracts.TaskReady, contracts.TaskRunning, "TEST_RUNNING"); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.transitionStep(ctx, created.ID, stepID, contracts.StepPending, contracts.StepReady, "TEST_STEP_READY"); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.transitionStep(ctx, created.ID, stepID, contracts.StepReady, contracts.StepRunning, "TEST_STEP_RUNNING"); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.transitionStep(ctx, created.ID, stepID, contracts.StepRunning, contracts.StepFailed, "TEST_STEP_FAILED"); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.transitionTask(ctx, created.ID, contracts.TaskRunning, contracts.TaskPaused, "TEST_PAUSED"); err != nil {
+		t.Fatal(err)
+	}
+	pausedTask, err := service.store.GetTask(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle, err := service.recordHorizonFailure(ctx, pausedTask, state, activePlan, contracts.NewError(contracts.ErrBudgetExceeded, "step iteration budget exceeded"))
+	if err != nil || cycle.Status != contracts.HorizonActive || cycle.Action != "REPLAN_REQUIRED" {
+		t.Fatalf("first iteration exhaustion did not request automatic local replanning: cycle=%#v err=%v", cycle, err)
+	}
+	replanned, err := service.AdvanceLongHorizonTask(ctx, created.ID)
+	if err != nil || replanned.Status != contracts.HorizonActive || replanned.Action != "SEGMENT_PLANNED" {
+		t.Fatalf("automatic local replan did not create a replacement segment: cycle=%#v err=%v", replanned, err)
+	}
+	latestState, err := service.GetLongHorizonStatus(ctx, created.ID)
+	if err != nil || latestState.ReplansUsed != 1 || latestState.LastProcessedPlanID != activePlan.PlanID {
+		t.Fatalf("automatic replan state is inconsistent: state=%#v err=%v", latestState, err)
+	}
+}
+
+func TestLongHorizonCompletesStepFromStableNegativeReadOnFinalExecutorTurn(t *testing.T) {
+	ctx := context.Background()
+	provider := &longHorizonProvider{responses: []contracts.ChatResponse{
+		{Text: `{"summary":"discover","terminal_segment":true,"steps":[{"ref":"scan","title":"扫描项目","goal":"定位项目文件和版本控制状态","tool_intents":["list_files","git_status"],"acceptance_intent":"取得项目结构和版本控制证据"}]}`},
 		{ToolCalls: []contracts.ToolCall{{ID: "read-1", Name: "list_files", ArgumentsJSON: `{"path":".","limit":1}`}}},
 		{ToolCalls: []contracts.ToolCall{{ID: "read-2", Name: "list_files", ArgumentsJSON: `{"path":".","limit":2}`}}},
 		{ToolCalls: []contracts.ToolCall{{ID: "read-3", Name: "list_files", ArgumentsJSON: `{"path":".","limit":3}`}}},
-		{ToolCalls: []contracts.ToolCall{{ID: "read-4", Name: "list_files", ArgumentsJSON: `{"path":".","limit":4}`}}},
+		{ToolCalls: []contracts.ToolCall{{ID: "git-negative", Name: "git_status", ArgumentsJSON: `{}`}}},
 	}}
 	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) { return provider, nil }})
 	if err != nil {
@@ -275,7 +343,7 @@ func TestLongHorizonCompletesStepFromFreshReadEvidenceOnFinalExecutorTurn(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, _, err := service.CreateLongHorizonTask(ctx, CreateLongHorizonTaskInput{DeploymentID: deployment.ID, CreateTaskInput: CreateTaskInput{WorkspaceID: workspaceItem.ID, Title: "final read", Goal: "检查项目", PermissionMode: contracts.PermissionModePlan, StageCheckpointPolicy: contracts.StageCheckpointNone}})
+	created, _, err := service.CreateLongHorizonTask(ctx, CreateLongHorizonTaskInput{DeploymentID: deployment.ID, CreateTaskInput: CreateTaskInput{WorkspaceID: workspaceItem.ID, Title: "final read", Goal: "检查项目", PermissionMode: contracts.PermissionModeEdit, AllowWriteProposals: true, StageCheckpointPolicy: contracts.StageCheckpointNone}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,11 +353,11 @@ func TestLongHorizonCompletesStepFromFreshReadEvidenceOnFinalExecutorTurn(t *tes
 	}
 	executed, err := service.AdvanceLongHorizonTask(ctx, created.ID)
 	if err != nil || executed.Status != contracts.HorizonActive || executed.Action != "STEP_EXECUTED" || executed.StepsCompleted != 1 {
-		t.Fatalf("fresh final-turn read evidence paused the horizon: cycle=%#v err=%v", executed, err)
+		t.Fatalf("stable final-turn negative read paused the horizon: cycle=%#v err=%v", executed, err)
 	}
 	snapshot, err := service.GetTaskSnapshot(ctx, created.ID)
 	if err != nil || snapshot.Task.Status != contracts.TaskRunning || len(snapshot.Steps) != 1 || snapshot.Steps[0].Status != contracts.StepCompleted {
-		t.Fatalf("last-turn read evidence did not complete the step: snapshot=%#v err=%v", snapshot, err)
+		t.Fatalf("last-turn negative read outcome did not complete the step: snapshot=%#v err=%v", snapshot, err)
 	}
 }
 

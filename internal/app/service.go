@@ -122,15 +122,16 @@ func (s *Service) GetLatestPlan(ctx context.Context, taskID string) (contracts.P
 	return s.store.GetLatestPlan(ctx, taskID)
 }
 
-// ReadTaskArtifact returns the verified content of a task artifact. Keeping
-// this behind Service preserves the content-addressed artifact boundary for
-// desktop consumers.
+// ReadTaskArtifact returns the newest verified content of a task artifact kind.
+// Keeping this behind Service preserves the content-addressed artifact boundary
+// for desktop consumers.
 func (s *Service) ReadTaskArtifact(ctx context.Context, taskID, kind string) ([]byte, error) {
 	items, err := s.ListTaskArtifacts(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
-	for _, item := range items {
+	for index := len(items) - 1; index >= 0; index-- {
+		item := items[index]
 		if item.Kind == kind {
 			return s.artifactStore.Read(item)
 		}

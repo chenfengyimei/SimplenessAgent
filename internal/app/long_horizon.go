@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -498,14 +499,20 @@ func (s *Service) recordHorizonFailure(ctx context.Context, item contracts.Task,
 	if domain, ok := cause.(*contracts.Error); ok {
 		code = string(domain.Code)
 	}
-	artifactItem, persistErr := s.persistHorizonArtifact(ctx, item.ID, "", "FAILURE_REPORT", "long-horizon cycle failure", map[string]interface{}{"stage": currentStage(state).ID, "plan_id": activePlan.PlanID, "error_code": code, "message": cause.Error(), "attempted_plan_id": activePlan.PlanID, "prohibited_replay": true, "next_action": "resume only after reviewing this failure; repeated unsupported work is blocked", "recorded_at": time.Now().UTC()})
+	nextReplanCount := state.ReplansUsed + 1
+	autoReplan := isStepIterationExhaustion(cause) && nextReplanCount <= item.Spec.Budget.MaxReplans && state.NoProgressCycles < 2
+	nextAction := "resume only after reviewing this failure; repeated unsupported work is blocked"
+	if autoReplan {
+		nextAction = "abandon the failed segment and create one local replacement segment from persisted evidence"
+	}
+	artifactItem, persistErr := s.persistHorizonArtifact(ctx, item.ID, "", "FAILURE_REPORT", "long-horizon cycle failure", map[string]interface{}{"stage": currentStage(state).ID, "plan_id": activePlan.PlanID, "error_code": code, "message": cause.Error(), "attempted_plan_id": activePlan.PlanID, "prohibited_replay": true, "next_action": nextAction, "automatic_replan": autoReplan, "recorded_at": time.Now().UTC()})
 	if persistErr != nil {
 		return contracts.LongHorizonCycleResult{}, persistErr
 	}
 	state.LatestFailureArtifactID = artifactItem.ID
 	state.Status = contracts.HorizonPaused
 	state.CheckpointReason = boundedCheckpointReason("cycle failed: "+cause.Error(), 600)
-	state.ReplansUsed++
+	state.ReplansUsed = nextReplanCount
 	// The failed plan is abandoned at this durable checkpoint. Resume must plan
 	// a new segment from the ledger instead of attempting pending dependants of
 	// a failed step or charging the same failure as a second replan.
@@ -513,6 +520,29 @@ func (s *Service) recordHorizonFailure(ctx context.Context, item contracts.Task,
 	latestTask, taskErr := s.store.GetTask(ctx, item.ID)
 	if taskErr != nil {
 		return contracts.LongHorizonCycleResult{}, taskErr
+	}
+	if autoReplan {
+		if latestTask.Status == contracts.TaskRunning {
+			if taskErr = s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskPaused, "HORIZON_AUTO_REPLAN_PAUSED"); taskErr != nil {
+				return contracts.LongHorizonCycleResult{}, taskErr
+			}
+			latestTask.Status = contracts.TaskPaused
+		}
+		if latestTask.Status == contracts.TaskPaused {
+			if taskErr = s.transitionTask(ctx, item.ID, contracts.TaskPaused, contracts.TaskReady, "HORIZON_AUTO_REPLAN_READY"); taskErr != nil {
+				return contracts.LongHorizonCycleResult{}, taskErr
+			}
+			latestTask.Status = contracts.TaskReady
+		}
+		if latestTask.Status == contracts.TaskReady {
+			item.Status = contracts.TaskReady
+			state.Status = contracts.HorizonActive
+			state.CheckpointReason = ""
+			if err := s.persistLedgerAndState(ctx, item, &state, "HORIZON_REPLAN_REQUIRED"); err != nil {
+				return contracts.LongHorizonCycleResult{}, err
+			}
+			return cycleResult(item, state, "REPLAN_REQUIRED"), nil
+		}
 	}
 	if latestTask.Status == contracts.TaskReady || latestTask.Status == contracts.TaskRunning {
 		if taskErr = s.transitionTask(ctx, item.ID, latestTask.Status, contracts.TaskPaused, "HORIZON_FAILURE_PAUSED"); taskErr != nil {
@@ -527,6 +557,11 @@ func (s *Service) recordHorizonFailure(ctx context.Context, item contracts.Task,
 	// service operation. The failure artifact and PAUSED checkpoint let desktop
 	// and CLI callers show the exact reason and resume explicitly.
 	return cycleResult(item, state, "FAILED_PAUSED"), nil
+}
+
+func isStepIterationExhaustion(cause error) bool {
+	var domain *contracts.Error
+	return errors.As(cause, &domain) && domain.Code == contracts.ErrBudgetExceeded && strings.Contains(domain.Message, "step iteration budget exceeded")
 }
 
 func boundedCheckpointReason(value string, limit int) string {

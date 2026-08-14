@@ -282,13 +282,30 @@ func TestRunFinalizesSuccessfulReadEvidenceOnLastIteration(t *testing.T) {
 func TestRunDoesNotFinalizeFailedReadOnLastIteration(t *testing.T) {
 	provider := &scriptedProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "failed-read", Name: "lookup", ArgumentsJSON: `{"query":"missing"}`}}}}}
 	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
-		return contracts.ToolResult{Status: "FAILED", Summary: "no evidence"}, nil
+		return contracts.ToolResult{Status: "FAILED", Summary: "temporary failure", Error: &contracts.ToolError{Code: string(contracts.ErrProviderInternal), Message: "temporary failure", Retryable: true}}, nil
 	})
 	executor, _ := New(provider, registry)
 	result, err := executor.Run(context.Background(), Input{Step: testStep(1)})
 	assertCode(t, err, contracts.ErrBudgetExceeded)
 	if len(result.ToolResults) != 1 || result.ToolResults[0].Status != "FAILED" || result.Text != "" {
-		t.Fatalf("failed read must remain fail-closed: %#v", result)
+		t.Fatalf("retryable failed read must remain fail-closed: %#v", result)
+	}
+}
+
+func TestRunFinalizesStableNegativeReadOutcomeOnLastIteration(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{{ToolCalls: []contracts.ToolCall{{ID: "negative-read", Name: "lookup", ArgumentsJSON: `{"query":"git"}`}}}}}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		return contracts.ToolResult{Status: "FAILED", Summary: "not a Git repository", Error: &contracts.ToolError{Code: string(contracts.ErrInvalidInput), Message: "not a Git repository"}}, nil
+	})
+	executor, _ := New(provider, registry)
+	step := testStep(1)
+	step.Goal = "检查工作区"
+	result, err := executor.Run(context.Background(), Input{Step: step})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ToolResults) != 1 || result.ToolResults[0].Status != "FAILED" || !strings.Contains(result.Text, "不可重试的负面结果") {
+		t.Fatalf("stable negative read outcome was not preserved as evidence: %#v", result)
 	}
 }
 
