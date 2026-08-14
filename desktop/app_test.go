@@ -78,6 +78,13 @@ func TestDesktopTaskUsesAgentReportAcceptance(t *testing.T) {
 	}
 }
 
+func TestUserFacingBudgetErrorsAreActionable(t *testing.T) {
+	message := userFacingError(contracts.NewError(contracts.ErrBudgetExceeded, "model token budget exceeded"))
+	if strings.Contains(message, "model token budget exceeded") || !strings.Contains(message, "输出") {
+		t.Fatalf("budget error leaked an internal implementation message: %q", message)
+	}
+}
+
 func TestConversationContinuesWithoutCreatingNewRoot(t *testing.T) {
 	service, err := app.Open(context.Background(), app.Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) {
 		return mock.Provider{Response: "not a plan"}, nil

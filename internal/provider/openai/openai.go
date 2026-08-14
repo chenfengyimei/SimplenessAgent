@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -218,6 +219,13 @@ func (p *Provider) ProbeCapabilities(ctx context.Context) contracts.CapabilitySn
 	if !p.HealthCheck(ctx).Healthy {
 		return snapshot
 	}
+	// Local OpenAI-compatible servers commonly expose their loaded model's
+	// context window through /models. Prefer an explicit operator-configured
+	// value, but otherwise persist the discovered value so the executor can
+	// size prompts for small local models on subsequent turns.
+	if snapshot.ReliableContextTokens <= 0 {
+		snapshot.ReliableContextTokens = p.discoverContextWindow(ctx)
+	}
 	probe := contracts.ChatRequest{DeploymentID: p.deploymentID, Messages: []contracts.Message{{Role: "user", Content: "Reply with OK."}}}
 	if _, err := p.Chat(ctx, probe); err != nil {
 		return snapshot
@@ -234,6 +242,59 @@ func (p *Provider) ProbeCapabilities(ctx context.Context) contracts.CapabilitySn
 	_, err := p.Chat(ctx, toolProbe)
 	snapshot.SupportsTools = err == nil
 	return snapshot
+}
+
+func (p *Provider) discoverContextWindow(ctx context.Context) int {
+	response, err := p.do(ctx, http.MethodGet, "models", nil)
+	if err != nil {
+		return 0
+	}
+	defer response.Body.Close()
+	if p.requireSuccess(response) != nil {
+		return 0
+	}
+	var payload struct {
+		Data []map[string]json.RawMessage `json:"data"`
+	}
+	if json.NewDecoder(io.LimitReader(response.Body, 256*1024)).Decode(&payload) != nil {
+		return 0
+	}
+	var fallback map[string]json.RawMessage
+	for _, model := range payload.Data {
+		if fallback == nil {
+			fallback = model
+		}
+		var id string
+		_ = json.Unmarshal(model["id"], &id)
+		if id == p.model {
+			return modelContextWindow(model)
+		}
+	}
+	if len(payload.Data) == 1 {
+		return modelContextWindow(fallback)
+	}
+	return 0
+}
+
+func modelContextWindow(model map[string]json.RawMessage) int {
+	for _, field := range []string{"context_length", "context_window", "max_model_len", "max_context_length"} {
+		value := model[field]
+		if len(value) == 0 {
+			continue
+		}
+		var number int
+		if json.Unmarshal(value, &number) == nil && number > 0 {
+			return number
+		}
+		var text string
+		if json.Unmarshal(value, &text) == nil {
+			var parsed int
+			if _, err := fmt.Sscanf(text, "%d", &parsed); err == nil && parsed > 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
 }
 
 func (p *Provider) validateRequest(request contracts.ChatRequest) error {
@@ -276,7 +337,7 @@ func (p *Provider) requestBody(request contracts.ChatRequest, stream bool) ([]by
 		}
 		tools = append(tools, wireTool{Type: "function", Function: wireFunction{Name: tool.Name, Description: tool.Description, Parameters: schema}})
 	}
-	requestBody := wireRequest{Model: p.model, Messages: messages, Tools: tools, Stream: stream}
+	requestBody := wireRequest{Model: p.model, Messages: messages, Tools: tools, Stream: stream, MaxTokens: request.MaxOutputTokens}
 	if request.JSONMode {
 		requestBody.ResponseFormat = &wireResponseFormat{Type: "json_object"}
 	}
@@ -399,6 +460,7 @@ type wireRequest struct {
 	Messages       []wireMessage       `json:"messages"`
 	Tools          []wireTool          `json:"tools,omitempty"`
 	Stream         bool                `json:"stream"`
+	MaxTokens      int                 `json:"max_tokens,omitempty"`
 	ResponseFormat *wireResponseFormat `json:"response_format,omitempty"`
 }
 type wireResponseFormat struct {

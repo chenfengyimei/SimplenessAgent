@@ -27,7 +27,7 @@ func TestChatNormalizesTextToolsUsageAndRequest(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if body.Model != "local-model" || body.Stream || len(body.Tools) != 1 || body.Tools[0].Function.Parameters["type"] != "object" {
+		if body.Model != "local-model" || body.Stream || body.MaxTokens != 321 || len(body.Tools) != 1 || body.Tools[0].Function.Parameters["type"] != "object" {
 			t.Fatalf("unexpected request %#v", body)
 		}
 		writer.Header().Set("Content-Type", "application/json")
@@ -36,9 +36,10 @@ func TestChatNormalizesTextToolsUsageAndRequest(t *testing.T) {
 	defer server.Close()
 	provider := newTestProvider(t, server.URL+"/v1")
 	response, err := provider.Chat(context.Background(), contracts.ChatRequest{
-		DeploymentID: "dep-local",
-		Messages:     []contracts.Message{{Role: "user", Content: "Inspect files"}},
-		Tools:        []contracts.ToolDefinition{{Name: "list_files", ParametersSchema: map[string]interface{}{"type": "object"}}},
+		DeploymentID:    "dep-local",
+		Messages:        []contracts.Message{{Role: "user", Content: "Inspect files"}},
+		Tools:           []contracts.ToolDefinition{{Name: "list_files", ParametersSchema: map[string]interface{}{"type": "object"}}},
+		MaxOutputTokens: 321,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +155,7 @@ func TestProbeCapabilitiesActivelyTestsSupportedShapes(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/v1/models" {
-			_, _ = writer.Write([]byte(`{"data":[]}`))
+			_, _ = writer.Write([]byte(`{"data":[{"id":"local-model","context_length":4096}]}`))
 			return
 		}
 		if request.URL.Path != "/v1/chat/completions" {
@@ -176,11 +177,14 @@ func TestProbeCapabilitiesActivelyTestsSupportedShapes(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"id":"chat","choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
-	provider := newTestProvider(t, server.URL+"/v1")
+	provider, err := New(Config{BaseURL: server.URL + "/v1", APIKey: "test-secret", Model: "local-model", DeploymentID: "dep-local"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	snapshot := provider.ProbeCapabilities(ctx)
-	if !snapshot.SupportsStreaming || !snapshot.SupportsTools || snapshot.ProbedAt.IsZero() {
+	if !snapshot.SupportsStreaming || !snapshot.SupportsTools || snapshot.ReliableContextTokens != 4096 || snapshot.ProbedAt.IsZero() {
 		t.Fatalf("unexpected capability snapshot %#v", snapshot)
 	}
 	mu.Lock()

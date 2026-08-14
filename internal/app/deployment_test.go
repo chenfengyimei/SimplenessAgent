@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,6 +38,37 @@ func TestDeploymentProbePersistsCapabilitySnapshot(t *testing.T) {
 	}
 	if len(deployments) != 1 || deployments[0].CapabilitySnapshotID != snapshot.ID {
 		t.Fatalf("snapshot linkage was not persisted: %#v", deployments)
+	}
+}
+
+func TestRunModelStepPersistsReportWhenModelExceedsOutputBudget(t *testing.T) {
+	ctx := context.Background()
+	provider := &recordingPermissionProvider{responses: []contracts.ChatResponse{{Text: "too long", Usage: contracts.TokenUsage{OutputTokens: 2049}}}}
+	service, err := Open(ctx, Config{DataDir: filepath.Join(t.TempDir(), "data"), ResolveProvider: func(contracts.Deployment) (contracts.ChatProvider, error) { return provider, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	workspace, err := service.CreateWorkspace(ctx, "demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := service.CreateTask(ctx, CreateTaskInput{WorkspaceID: workspace.ID, Title: "inspect", Goal: "inspect", AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "agent", Type: contracts.AcceptanceEvidenceExists, Description: "report", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := service.CreateDeployment(ctx, contracts.Deployment{Name: "local", ProviderType: "openai_compatible", Location: "LOCAL", Endpoint: "http://127.0.0.1", Model: "test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.RunModelStep(ctx, RunModelStepInput{TaskID: created.ID, DeploymentID: deployment.ID})
+	var domain *contracts.Error
+	if !errors.As(err, &domain) || domain.Code != contracts.ErrBudgetExceeded {
+		t.Fatalf("expected a budget error, got %v", err)
+	}
+	artifacts, err := service.ListTaskArtifacts(ctx, created.ID)
+	if err != nil || len(artifacts) != 1 || artifacts[0].Kind != "AGENT_REPORT" {
+		t.Fatalf("failed turn did not retain its diagnostic report: %#v, %v", artifacts, err)
 	}
 }
 

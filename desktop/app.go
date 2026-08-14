@@ -606,6 +606,12 @@ func uniqueStrings(values []string) []string {
 
 func userFacingError(err error) string {
 	if domain, ok := err.(*contracts.Error); ok {
+		switch domain.Code {
+		case contracts.ErrContextOverflow:
+			return "当前模型可用上下文不足，系统已在调用前停止本轮，避免无效消耗。可在模型设置中探测或提高上下文容量，或缩短对话内容"
+		case contracts.ErrBudgetExceeded, contracts.ErrOutputLimitReached:
+			return "模型本轮输出超过受控上限，系统已停止继续执行并保留诊断记录。请降低任务粒度或使用支持 max_tokens 的模型服务"
+		}
 		return domain.Message
 	}
 	return "本地执行器发生未预期错误"

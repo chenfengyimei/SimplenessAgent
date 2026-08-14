@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -193,6 +194,49 @@ func TestRunStopsAtBudgetAndRejectsWriteTools(t *testing.T) {
 	step.Budget.MaxDurationMS = 1
 	_, err = worker.Run(context.Background(), Input{Step: step})
 	assertCode(t, err, contracts.ErrRequestTimeout)
+}
+
+func TestRunPreflightsContextAndDoesNotRejectProviderPromptAccounting(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{{Text: "brief answer", Usage: contracts.TokenUsage{InputTokens: 12000, OutputTokens: 12}}}}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		return contracts.ToolResult{}, nil
+	})
+	executor, err := New(provider, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := testStep(1)
+	step.Budget.MaxInputTokens = 64 // Context-package budget, not provider replay accounting.
+	step.Budget.MaxOutputTokens = 128
+	result, err := executor.Run(context.Background(), Input{Step: step, ReliableContextTokens: 4096})
+	if err != nil || result.Text != "brief answer" {
+		t.Fatalf("a bounded response must not fail solely because the provider reports the complete prompt: result=%#v err=%v", result, err)
+	}
+	if len(provider.requests) != 1 || provider.requests[0].MaxOutputTokens != 128 {
+		t.Fatalf("worker did not send the response ceiling to the provider: %#v", provider.requests)
+	}
+}
+
+func TestRunRejectsOverfullPromptBeforeCallingProvider(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{{Text: "must not be used"}}}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		return contracts.ToolResult{}, nil
+	})
+	executor, _ := New(provider, registry)
+	step := testStep(1)
+	contextPackage := &contracts.ContextPackage{Version: contracts.SchemaVersion, ID: "ctx", Role: "EXECUTOR", TaskID: "task", StepID: step.StepID, CompilerVersion: "1.0.0", Budget: contracts.ContextBudget{Limit: 2000, Used: 1000}, Sections: []contracts.ContextSection{{Type: "TASK", Content: strings.Repeat("x", 4000), EstimatedTokens: 1000}}}
+	_, err := executor.Run(context.Background(), Input{Step: step, ContextPackage: contextPackage, ReliableContextTokens: 512})
+	assertCode(t, err, contracts.ErrContextOverflow)
+	if len(provider.requests) != 0 {
+		t.Fatalf("overfull prompts must be rejected locally: %#v", provider.requests)
+	}
+}
+
+func TestMarshalToolResultForModelKeepsBoundedValidJSON(t *testing.T) {
+	encoded, err := marshalToolResultForModel(contracts.ToolResult{Status: "SUCCEEDED", Summary: "file read", Data: map[string]interface{}{"content": strings.Repeat("x", 10000)}}, 128)
+	if err != nil || !json.Valid(encoded) || !strings.Contains(string(encoded), "data_truncated") {
+		t.Fatalf("large tool output was not compacted safely: %s, %v", encoded, err)
+	}
 }
 
 func TestRunStopsAfterApprovalGatedWriteProposal(t *testing.T) {

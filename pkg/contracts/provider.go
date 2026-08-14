@@ -19,6 +19,10 @@ type ChatRequest struct {
 	Messages     []Message        `json:"messages"`
 	Tools        []ToolDefinition `json:"tools,omitempty"`
 	JSONMode     bool             `json:"json_mode,omitempty"`
+	// MaxOutputTokens is a provider-facing ceiling for one response. Keeping
+	// this on the request (rather than merely checking usage afterwards) is
+	// essential for local/small models: it leaves room for the next tool turn.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
 
 type Message struct {

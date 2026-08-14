@@ -1262,7 +1262,7 @@ func minimalPlan(item contracts.Task, allowWriteProposals bool) contracts.PlanVe
 		if mode == contracts.PermissionModePlan {
 			role = "RECON"
 		}
-		return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: summary, CreatedByAgent: "core-conversation-bootstrap", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: title, Goal: item.Goal, AllowedTools: toolNames, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_agent", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的模型 Agent 报告", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: risk, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: iterations, MaxDurationMS: int64((10 * time.Minute).Milliseconds()), MaxInputTokens: 32768, MaxOutputTokens: 8192}, ExecutionMode: "AGENT", PreferredRole: role}}}
+		return contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: item.ID, Revision: 1, Reason: "INITIAL_PLAN", Summary: summary, CreatedByAgent: "core-conversation-bootstrap", CreatedAt: time.Now().UTC(), Steps: []contracts.StepSpec{{Version: contracts.SchemaVersion, StepID: task.NewID("stp"), Title: title, Goal: item.Goal, AllowedTools: toolNames, WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "ac_agent", Type: contracts.AcceptanceEvidenceExists, Description: "存在已验证的模型 Agent 报告", Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: risk, Budget: contracts.StepBudget{MaxAttempts: 1, MaxIterations: iterations, MaxDurationMS: int64((10 * time.Minute).Milliseconds()), MaxInputTokens: 8192, MaxOutputTokens: 2048}, ExecutionMode: "AGENT", PreferredRole: role}}}
 	}
 	return deterministicReconPlan(item)
 }
@@ -1284,11 +1284,11 @@ func taskPermissionMode(item contracts.Task) (contracts.PermissionMode, error) {
 func modePlanShape(mode contracts.PermissionMode) ([]string, contracts.RiskClass, string, string, int) {
 	switch mode {
 	case contracts.PermissionModePlan:
-		return []string{"list_files", "file_info", "read_file", "search_text", "ask_user", "adjust_context_budget"}, contracts.RiskRead, "分析与规划（只读）", "在计划模式中只读取工作区信息，不执行命令、不修改文件。", 4
+		return []string{"list_files", "read_file", "search_text", "ask_user"}, contracts.RiskRead, "分析与规划（只读）", "在计划模式中只读取工作区信息，不执行命令、不修改文件。", 4
 	case contracts.PermissionModeDevelopment:
-		return []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet", "write_file", "apply_patch", "run_project_command", "ask_user", "adjust_context_budget"}, contracts.RiskDangerous, "开发执行", "在开发模式中执行受工作区边界、预算和审计约束的开发操作。", 8
+		return []string{"list_files", "file_info", "read_file", "search_text", "write_file", "apply_patch", "run_project_command", "ask_user"}, contracts.RiskDangerous, "开发执行", "在开发模式中执行受工作区边界、预算和审计约束的开发操作。", 8
 	default:
-		return []string{"list_files", "file_info", "read_file", "search_text", "git_status", "git_diff", "run_go_test", "run_go_vet", "propose_write_file", "propose_text_replace", "propose_file_batch", "propose_apply_patch", "propose_project_command", "ask_user", "adjust_context_budget"}, contracts.RiskWrite, "编辑与受控执行", "在编辑模式中读取工作区、提交可审阅的文件修改；项目命令必须先取得明确同意。", 7
+		return []string{"list_files", "file_info", "read_file", "search_text", "propose_write_file", "propose_file_batch", "propose_project_command", "ask_user"}, contracts.RiskWrite, "编辑与受控执行", "在编辑模式中读取工作区、提交可审阅的文件修改；项目命令必须先取得明确同意。", 7
 	}
 }
 
@@ -1781,7 +1781,19 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	}); err != nil {
 		return TaskSnapshot{}, err
 	}
-	contextPackage, err := modelContext(item, planVersion, step, deployment.ID, input.ContextPackage, input.ContextSections)
+	allowedDefinitions, err := stepToolDefinitions(registry, step)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	contextWindow, err := s.reliableContextWindow(ctx, deployment)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	contextLimit, err := usableContextBudget(step, permissionMode, allowedDefinitions, contextWindow)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	contextPackage, err := modelContext(item, planVersion, step, deployment.ID, input.ContextPackage, input.ContextSections, contextLimit)
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
@@ -1805,7 +1817,7 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	if _, err = s.CheckpointTask(ctx, item.ID); err != nil {
 		return TaskSnapshot{}, err
 	}
-	result, runErr := executor.Run(ctx, worker.Input{DeploymentID: deployment.ID, Step: step, PermissionMode: permissionMode, ContextPackage: &contextPackage, Skills: input.Skills, EffectiveBudget: effectiveBudget})
+	result, runErr := executor.Run(ctx, worker.Input{DeploymentID: deployment.ID, Step: step, PermissionMode: permissionMode, ContextPackage: &contextPackage, Skills: input.Skills, EffectiveBudget: effectiveBudget, ReliableContextTokens: contextWindow})
 	for _, toolResult := range result.ToolResults {
 		if directIntentIDs[toolResult.ToolCallID] {
 			if updateErr := s.store.UpdateToolIntentStatus(ctx, toolResult.ToolCallID, toolResult.Status); updateErr != nil && runErr == nil {
@@ -1836,10 +1848,13 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 		runErr = contracts.NewError(contracts.ErrApprovalRequired, "a requested operation is waiting for user approval")
 	}
 	if runErr != nil {
+		// Keep the attempted prompt's measured usage and any safe tool evidence in
+		// the task record. A failed turn must remain diagnosable instead of looking
+		// like the model was never called.
+		if reportErr := s.persistAgentReport(ctx, item, step.StepID, result); reportErr != nil {
+			return TaskSnapshot{}, reportErr
+		}
 		if pending != nil || pendingCommand != nil {
-			if err = s.persistAgentReport(ctx, item, step.StepID, result); err != nil {
-				return TaskSnapshot{}, err
-			}
 			if pending != nil {
 				if err = s.persistPendingWrite(ctx, item, step.StepID, *pending); err != nil {
 					return TaskSnapshot{}, err
@@ -1937,7 +1952,7 @@ func findStep(planVersion contracts.PlanVersion, stepID string) (contracts.StepS
 	return contracts.StepSpec{}, false
 }
 
-func modelContext(item contracts.Task, planVersion contracts.PlanVersion, step contracts.StepSpec, deploymentID string, supplied *contracts.ContextPackage, extra []contracts.ContextSection) (contracts.ContextPackage, error) {
+func modelContext(item contracts.Task, planVersion contracts.PlanVersion, step contracts.StepSpec, deploymentID string, supplied *contracts.ContextPackage, extra []contracts.ContextSection, limitOverride int) (contracts.ContextPackage, error) {
 	if supplied != nil {
 		return *supplied, nil
 	}
@@ -1946,8 +1961,11 @@ func modelContext(item contracts.Task, planVersion contracts.PlanVersion, step c
 		return contracts.ContextPackage{}, err
 	}
 	limit := step.Budget.MaxInputTokens
+	if limitOverride > 0 && (limit <= 0 || limitOverride < limit) {
+		limit = limitOverride
+	}
 	if limit <= 0 {
-		limit = 32768
+		limit = 8192
 	}
 	sections := make([]contracts.ContextSection, 0, len(extra)+1)
 	sections = append(sections, contracts.ContextSection{Type: "TASK_STEP", Content: string(encoded), SourceRefs: []string{item.ID, planVersion.PlanID, step.StepID}, Priority: 100})
@@ -1957,6 +1975,59 @@ func modelContext(item contracts.Task, planVersion contracts.PlanVersion, step c
 		return contracts.ContextPackage{}, err
 	}
 	return compiled.Package, nil
+}
+
+const defaultReliableContextWindow = 8192
+
+func (s *Service) reliableContextWindow(ctx context.Context, deployment contracts.Deployment) (int, error) {
+	if strings.TrimSpace(deployment.CapabilitySnapshotID) == "" {
+		return defaultReliableContextWindow, nil
+	}
+	snapshot, err := s.store.GetCapabilitySnapshot(ctx, deployment.CapabilitySnapshotID)
+	if err != nil {
+		return 0, err
+	}
+	if snapshot.ReliableContextTokens > 0 {
+		return snapshot.ReliableContextTokens, nil
+	}
+	return defaultReliableContextWindow, nil
+}
+
+func stepToolDefinitions(registry *tool.Registry, step contracts.StepSpec) ([]contracts.ToolDefinition, error) {
+	definitions := make([]contracts.ToolDefinition, 0, len(step.AllowedTools))
+	seen := map[string]bool{}
+	for _, name := range step.AllowedTools {
+		if seen[name] {
+			continue
+		}
+		definition, ok := registry.Definition(name)
+		if !ok {
+			return nil, contracts.NewError(contracts.ErrToolNotAllowed, "step allowlist references an unregistered tool")
+		}
+		seen[name] = true
+		definitions = append(definitions, definition)
+	}
+	return definitions, nil
+}
+
+func usableContextBudget(step contracts.StepSpec, mode contracts.PermissionMode, definitions []contracts.ToolDefinition, window int) (int, error) {
+	if window <= 0 {
+		window = defaultReliableContextWindow
+	}
+	// Reserve at least a useful response, while allowing larger models to emit a
+	// complete proposal. The Worker performs an exact check before each call.
+	responseReserve := step.Budget.MaxOutputTokens
+	if responseReserve <= 0 || responseReserve > window/3 {
+		responseReserve = window / 3
+	}
+	if responseReserve < 256 {
+		responseReserve = 256
+	}
+	available := window - worker.PromptOverheadTokens(step, mode, definitions) - responseReserve - 256
+	if available < 128 {
+		return 0, contracts.NewError(contracts.ErrContextOverflow, fmt.Sprintf("configured model context is too small for this task's tool interface (window=%d, tools=%d); use plan mode, reduce tools, or configure a larger context", window, len(definitions)))
+	}
+	return available, nil
 }
 
 func (s *Service) persistAgentReport(ctx context.Context, item contracts.Task, stepID string, result worker.Result) error {
