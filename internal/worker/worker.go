@@ -97,7 +97,7 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		if input.EffectiveBudget != nil {
 			budget = *input.EffectiveBudget
 		}
-		if exceeded(budget, result.Usage) {
+		if exceeded(budget, response.Usage) {
 			return result, contracts.NewError(contracts.ErrBudgetExceeded, "model token budget exceeded")
 		}
 		if len(response.ToolCalls) == 0 {
@@ -154,6 +154,13 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		}
 		messages = append(messages, contracts.Message{Role: "assistant", Content: response.Text, ToolCalls: response.ToolCalls})
 		messages = append(messages, toolMessages...)
+		stepBudget := input.Step.Budget
+		if input.EffectiveBudget != nil {
+			stepBudget = *input.EffectiveBudget
+		}
+		if cumulativeExceeded(stepBudget, result.Usage) {
+			return result, contracts.NewError(contracts.ErrBudgetExceeded, "cumulative token budget exceeded")
+		}
 	}
 	return result, contracts.NewError(contracts.ErrBudgetExceeded, "step iteration budget exceeded")
 }
@@ -339,6 +346,10 @@ func renderContext(input Input) string {
 
 func exceeded(budget contracts.StepBudget, usage contracts.TokenUsage) bool {
 	return budget.MaxInputTokens > 0 && usage.InputTokens > budget.MaxInputTokens || budget.MaxOutputTokens > 0 && usage.OutputTokens > budget.MaxOutputTokens
+}
+
+func cumulativeExceeded(budget contracts.StepBudget, usage contracts.TokenUsage) bool {
+	return budget.MaxInputTokens > 0 && usage.InputTokens > budget.MaxInputTokens*4 || budget.MaxOutputTokens > 0 && usage.OutputTokens > budget.MaxOutputTokens*4
 }
 
 func containsTool(definitions []contracts.ToolDefinition, name string) bool {
