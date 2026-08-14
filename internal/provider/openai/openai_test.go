@@ -199,3 +199,54 @@ func newTestProvider(t *testing.T, baseURL string) *Provider {
 	}
 	return provider
 }
+
+func TestChatClassifiesReadTimeoutAsRequestTimeout(t *testing.T) {
+	handlerDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		select {
+		case <-request.Context().Done():
+		case <-handlerDone:
+		}
+	}))
+	defer func() {
+		close(handlerDone)
+		server.Close()
+	}()
+	provider, err := New(Config{BaseURL: server.URL, APIKey: "test-secret", Model: "local-model", DeploymentID: "dep-local", ReliableContextTokens: 8192, HTTPClient: &http.Client{Timeout: 50 * time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Chat(context.Background(), contracts.ChatRequest{Messages: []contracts.Message{{Role: "user", Content: "hello"}}})
+	var domain *contracts.Error
+	if !errors.As(err, &domain) || domain.Code != contracts.ErrRequestTimeout {
+		t.Fatalf("expected ErrRequestTimeout for read timeout, got: %v", err)
+	}
+}
+
+func TestChatPreservesUnderlyingReadError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if hijacker, ok := writer.(http.Hijacker); ok {
+			conn, _, _ := hijacker.Hijack()
+			conn.Close()
+		}
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, server.URL)
+	_, err := provider.Chat(context.Background(), contracts.ChatRequest{Messages: []contracts.Message{{Role: "user", Content: "hello"}}})
+	var domain *contracts.Error
+	if !errors.As(err, &domain) {
+		t.Fatalf("expected contracts.Error, got: %v", err)
+	}
+	if domain.Code != contracts.ErrEndpointUnreachable && domain.Code != contracts.ErrInvalidResponse {
+		t.Fatalf("expected endpoint unreachable or invalid response for connection drop, got: %s", domain.Code)
+	}
+	if domain.Message == "provider response could not be read" {
+		t.Fatalf("generic message was not replaced with diagnostic detail: %s", domain.Message)
+	}
+}

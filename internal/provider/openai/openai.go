@@ -181,6 +181,9 @@ func (p *Provider) ChatStream(ctx context.Context, request contracts.ChatRequest
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		if classified := classifyReadError(ctx, err); classified != nil {
+			return classified
+		}
 		return transportError(ctx, err)
 	}
 	if !completed {
@@ -343,6 +346,26 @@ func transportError(ctx context.Context, err error) error {
 		return contracts.NewError(contracts.ErrRequestTimeout, "provider request timed out")
 	}
 	return &contracts.Error{Code: contracts.ErrEndpointUnreachable, Message: "provider endpoint is unreachable", Cause: err}
+}
+
+// classifyReadError inspects an error returned by io.ReadAll on the provider
+// response body. Unlike transportError (which covers the initial HTTP round
+// trip), this also catches mid-read connection resets that arrive as plain
+// "read tcp" errors without wrapping context. Returns nil when the error does
+// not match a known transport classification, leaving the caller to report it
+// as an invalid response with the raw message preserved.
+func classifyReadError(ctx context.Context, err error) error {
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return contracts.NewError(contracts.ErrRequestCancelled, "provider request was cancelled")
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return contracts.NewError(contracts.ErrRequestTimeout, "provider response read timed out — the model may have taken too long to generate; consider retrying or increasing the timeout")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "EOF") {
+		return &contracts.Error{Code: contracts.ErrEndpointUnreachable, Message: "provider connection was lost while reading the response", Cause: err}
+	}
+	return nil
 }
 
 func safeErrorMessage(err error) string {
