@@ -372,7 +372,7 @@ func writeObligationInstruction(allowed []contracts.ToolDefinition) string {
 			names = append(names, definition.Name)
 		}
 	}
-	return "This step's goal requires creating or changing files, and no write tool has been used yet. Read-only evidence cannot complete it. Call one of the write tools now to apply or propose the change: " + strings.Join(names, ", ") + ". Do not return a final answer without a write tool call."
+	return "This step's goal requires creating or changing files, and no write tool has been used yet. Read-only evidence cannot complete it. Call one of the write tools now to apply or propose the change: " + strings.Join(names, ", ") + ". Before writing an existing file, call file_info and pass its exact content_hash; for a new file, file_info returns the hash to use. If the whole file is too large for one call, write the first part now and extend the same file with the text-replace tool in your next response. Do not return a final answer without a write tool call."
 }
 
 func containsMutatingTool(allowed []contracts.ToolDefinition) bool {

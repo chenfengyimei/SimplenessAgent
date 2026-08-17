@@ -126,8 +126,8 @@ func TestNormalizeExecutorProfileFloorsLegacyValues(t *testing.T) {
 	if normalized.MaxToolCalls != minExecutorToolCalls || normalized.MaxOutputTokens != minExecutorOutputTokens {
 		t.Fatalf("legacy executor profile was not floored: %#v", normalized)
 	}
-	raised := contracts.ModelRoleProfile{Role: contracts.ModelRoleExecutor, MaxToolCalls: 6, MaxOutputTokens: 4096}
-	if kept := normalizeExecutorProfile(raised); kept.MaxToolCalls != 6 || kept.MaxOutputTokens != 4096 {
+	raised := contracts.ModelRoleProfile{Role: contracts.ModelRoleExecutor, MaxToolCalls: 6, MaxOutputTokens: 16384}
+	if kept := normalizeExecutorProfile(raised); kept.MaxToolCalls != 6 || kept.MaxOutputTokens != 16384 {
 		t.Fatalf("operator-raised executor profile was lowered: %#v", kept)
 	}
 }

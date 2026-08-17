@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 2026-08-17 Write-budget capacity and chunked delivery
+
+- 修复写步骤"物理写不出"：执行器输出预算 1536 token 装不下一个游戏级 HTML 的写提案（内容本身需数千 token），模型想写也发不出合法工具调用，只能放弃 → 触发写义务守卫 fail-closed。执行器默认与下限预算提升至 8192（步骤预算同步），恢复旧任务亦生效；操作员更高配置不压低。
+- 分块分步指引：规划器契约要求大型交付物拆分为多个小文件（如 index.html / style.css / game.js）分步写入，后续步骤可用替换工具扩展同一文件；执行器写义务修复指令补充 file_info→content_hash 用法（新文件同样由 file_info 返回哈希）与"过大文件先写前半、下一响应用 text_replace 续写"的分块策略。
+
 ### 2026-08-17 Executor write-obligation guard
 
 - 执行器侧写义务守卫：长程 WRITE 步骤若在无任何写入工具调用的情况下试图以纯文本收尾或以只读证据终结，先注入修复指令（点名可用写入工具），仍无视则整步 fail-closed（"write-intent step ended without any write proposal"），杜绝规划器门禁被绕过后执行层仍零产出假完成。单计划模式保留原有回合级守卫与"建议使用长程模式"提示，不受影响。

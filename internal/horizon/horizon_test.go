@@ -29,7 +29,7 @@ func TestSegmentPlannerBuildsBoundedLocalPlan(t *testing.T) {
 	if len(result.Steps) != 2 || result.HorizonID != plan.HorizonID || result.StageID != "DISCOVER" || !result.TerminalSegment {
 		t.Fatalf("unexpected segment plan: %#v", result)
 	}
-	if len(result.Steps[1].Dependencies) != 1 || result.Steps[1].Dependencies[0] != result.Steps[0].StepID || result.Steps[0].Budget.MaxOutputTokens != 1536 {
+	if len(result.Steps[1].Dependencies) != 1 || result.Steps[1].Dependencies[0] != result.Steps[0].StepID || result.Steps[0].Budget.MaxOutputTokens != 8192 {
 		t.Fatalf("local identities or budgets were not applied: %#v", result.Steps)
 	}
 }
@@ -121,8 +121,8 @@ func TestDefaultProfilesExecutorAllowsBatchedReads(t *testing.T) {
 	if executor.MaxToolCalls < 2 {
 		t.Fatalf("executor must allow batched independent reads per the executor contract, got %d", executor.MaxToolCalls)
 	}
-	if executor.MaxOutputTokens < 1536 {
-		t.Fatalf("executor output budget must leave headroom for thinking models, got %d", executor.MaxOutputTokens)
+	if executor.MaxOutputTokens < 8192 {
+		t.Fatalf("executor output budget must hold a complete file-write proposal, got %d", executor.MaxOutputTokens)
 	}
 }
 

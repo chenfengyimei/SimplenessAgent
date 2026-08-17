@@ -25,11 +25,14 @@ type CreateLongHorizonTaskInput struct {
 // reasoning and then return an empty answer. These floors keep resumed tasks
 // (whose persisted profiles predate the raised defaults) on a usable budget.
 // The executor tool-call floor matches the executor contract, which promises
-// that several independent reads may be batched in one response.
+// that several independent reads may be batched in one response. The executor
+// output floor must also hold a complete file-write proposal: a game-sized
+// HTML document needs thousands of tokens inside one tool call, so a smaller
+// ceiling makes writing physically impossible for the model.
 const (
 	minPlannerOutputTokens  = 3072
 	minVerifierOutputTokens = 1024
-	minExecutorOutputTokens = 1536
+	minExecutorOutputTokens = 8192
 	minExecutorToolCalls    = 4
 )
 
