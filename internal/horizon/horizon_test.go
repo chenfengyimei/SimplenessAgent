@@ -112,6 +112,20 @@ func TestSegmentPlannerReportsTokenExhaustionDiagnosisForEmptyReplies(t *testing
 	}
 }
 
+func TestDefaultProfilesExecutorAllowsBatchedReads(t *testing.T) {
+	profiles := DefaultProfiles("dep", time.Now().UTC())
+	if len(profiles) != 3 || profiles[1].Role != contracts.ModelRoleExecutor {
+		t.Fatalf("unexpected profile set: %#v", profiles)
+	}
+	executor := profiles[1]
+	if executor.MaxToolCalls < 2 {
+		t.Fatalf("executor must allow batched independent reads per the executor contract, got %d", executor.MaxToolCalls)
+	}
+	if executor.MaxOutputTokens < 1536 {
+		t.Fatalf("executor output budget must leave headroom for thinking models, got %d", executor.MaxOutputTokens)
+	}
+}
+
 func TestBuildPlanGrantsMutatingStepsReadToolsDeterministically(t *testing.T) {
 	provider := mock.Provider{Response: `{"summary":"implement change","terminal_segment":true,"steps":[{"ref":"write","title":"Write the file","goal":"Persist the approved change","tool_intents":["write_file"],"acceptance_intent":"The file contains the change"}]}`}
 	planner, _ := NewSegmentPlanner(provider)

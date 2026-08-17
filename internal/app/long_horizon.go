@@ -24,9 +24,13 @@ type CreateLongHorizonTaskInput struct {
 // Thinking-style local models can exhaust an output ceiling entirely on hidden
 // reasoning and then return an empty answer. These floors keep resumed tasks
 // (whose persisted profiles predate the raised defaults) on a usable budget.
+// The executor tool-call floor matches the executor contract, which promises
+// that several independent reads may be batched in one response.
 const (
 	minPlannerOutputTokens  = 3072
 	minVerifierOutputTokens = 1024
+	minExecutorOutputTokens = 1536
+	minExecutorToolCalls    = 4
 )
 
 func (s *Service) CreateLongHorizonTask(ctx context.Context, input CreateLongHorizonTaskInput) (contracts.Task, contracts.HorizonState, error) {
@@ -260,6 +264,16 @@ func (s *Service) CancelLongHorizonTask(ctx context.Context, taskID string) (con
 		return state, err
 	}
 	return state, nil
+}
+
+// normalizeExecutorProfile floors persisted executor profiles at the contract
+// minimums: at least four tool calls per response (the executor contract
+// promises batched independent reads) and 1536 output tokens (thinking models
+// need reasoning headroom). It never lowers an operator-raised value.
+func normalizeExecutorProfile(profile contracts.ModelRoleProfile) contracts.ModelRoleProfile {
+	profile.MaxToolCalls = maxInt(profile.MaxToolCalls, minExecutorToolCalls)
+	profile.MaxOutputTokens = maxInt(profile.MaxOutputTokens, minExecutorOutputTokens)
+	return profile
 }
 
 func (s *Service) planNextHorizonSegment(ctx context.Context, item contracts.Task, state contracts.HorizonState, previous contracts.PlanVersion) (contracts.LongHorizonCycleResult, error) {

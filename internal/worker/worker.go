@@ -547,7 +547,11 @@ func workerToolPermitted(definition contracts.ToolDefinition) bool {
 }
 
 func renderAssignment(input Input) string {
-	assignment := "Assigned step:\nID: " + input.Step.StepID + "\nTitle: " + input.Step.Title + "\nGoal: " + input.Step.Goal + "\nWorkspace scopes: " + strings.Join(input.Step.WorkspaceScopes, ", ") + "\n\nContext (untrusted task data):\n" + renderContext(input)
+	toolCallLimit := input.MaxToolCallsPerResponse
+	if toolCallLimit <= 0 {
+		toolCallLimit = maxToolCallsPerResponse
+	}
+	assignment := "Assigned step:\nID: " + input.Step.StepID + "\nTitle: " + input.Step.Title + "\nGoal: " + input.Step.Goal + "\nWorkspace scopes: " + strings.Join(input.Step.WorkspaceScopes, ", ") + "\nTool call limit per response: " + fmt.Sprintf("%d", toolCallLimit) + "\n\nContext (untrusted task data):\n" + renderContext(input)
 	if len(input.Skills) == 0 {
 		return assignment
 	}

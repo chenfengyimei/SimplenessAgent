@@ -120,6 +120,18 @@ func (p *longHorizonProvider) ProbeCapabilities(context.Context) contracts.Capab
 	return contracts.CapabilitySnapshot{Version: contracts.SchemaVersion, SupportsTools: true, ReliableContextTokens: window, ProbedAt: time.Now().UTC()}
 }
 
+func TestNormalizeExecutorProfileFloorsLegacyValues(t *testing.T) {
+	legacy := contracts.ModelRoleProfile{Role: contracts.ModelRoleExecutor, MaxToolCalls: 1, MaxOutputTokens: 768}
+	normalized := normalizeExecutorProfile(legacy)
+	if normalized.MaxToolCalls != minExecutorToolCalls || normalized.MaxOutputTokens != minExecutorOutputTokens {
+		t.Fatalf("legacy executor profile was not floored: %#v", normalized)
+	}
+	raised := contracts.ModelRoleProfile{Role: contracts.ModelRoleExecutor, MaxToolCalls: 6, MaxOutputTokens: 4096}
+	if kept := normalizeExecutorProfile(raised); kept.MaxToolCalls != 6 || kept.MaxOutputTokens != 4096 {
+		t.Fatalf("operator-raised executor profile was lowered: %#v", kept)
+	}
+}
+
 func TestCreateLongHorizonFailsClosedForVerified4KDeployment(t *testing.T) {
 	ctx := context.Background()
 	provider := &longHorizonProvider{window: 4096}

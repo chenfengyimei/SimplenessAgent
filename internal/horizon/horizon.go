@@ -34,7 +34,7 @@ func DefaultPlan(taskID string, now time.Time) contracts.HorizonPlan {
 func DefaultProfiles(deploymentID string, now time.Time) []contracts.ModelRoleProfile {
 	return []contracts.ModelRoleProfile{
 		{Version: contracts.SchemaVersion, ID: task.NewID("mpr"), DeploymentID: deploymentID, Role: contracts.ModelRolePlanner, Temperature: 0.1, MaxOutputTokens: 3072, MaxIterations: 2, MaxToolCalls: 0, CreatedAt: now, UpdatedAt: now},
-		{Version: contracts.SchemaVersion, ID: task.NewID("mpr"), DeploymentID: deploymentID, Role: contracts.ModelRoleExecutor, Temperature: 0.1, MaxOutputTokens: 1536, MaxIterations: 4, MaxToolCalls: 1, CreatedAt: now, UpdatedAt: now},
+		{Version: contracts.SchemaVersion, ID: task.NewID("mpr"), DeploymentID: deploymentID, Role: contracts.ModelRoleExecutor, Temperature: 0.1, MaxOutputTokens: 1536, MaxIterations: 4, MaxToolCalls: 4, CreatedAt: now, UpdatedAt: now},
 		{Version: contracts.SchemaVersion, ID: task.NewID("mpr"), DeploymentID: deploymentID, Role: contracts.ModelRoleVerifier, Temperature: 0, MaxOutputTokens: 1024, MaxIterations: 1, MaxToolCalls: 0, CreatedAt: now, UpdatedAt: now},
 	}
 }

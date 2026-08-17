@@ -641,7 +641,7 @@ func (a *App) advanceLongConversation(service *app.Service, taskID, conversation
 		if cycle.StepsPlanned > cycle.StepsCompleted && cycle.Action != "COMPLETED" {
 			message += fmt.Sprintf("（其中 %d 步来自失败后被替换的旧计划段，不会重复执行）", cycle.StepsPlanned-cycle.StepsCompleted)
 		}
-		if cycle.Action == "COMPLETED" {
+		if cycle.Action == "COMPLETED" || cycle.Action == "TERMINAL" && cycle.Status == contracts.HorizonCompleted {
 			if summary, summaryErr := a.buildLongHorizonCompletionSummary(service, taskID, cycle); summaryErr == nil {
 				message = summary
 			} else {
