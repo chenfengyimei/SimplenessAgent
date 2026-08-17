@@ -96,6 +96,7 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 	}
 	result := Result{}
 	seen := map[string]struct{}{}
+	cachedReads := map[string]contracts.ToolResult{}
 	repairAttempted := false
 	for iteration := 0; iteration < input.Step.Budget.MaxIterations; iteration++ {
 		if err := runContext.Err(); err != nil {
@@ -138,7 +139,7 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		if toolCallLimit <= 0 {
 			toolCallLimit = maxToolCallsPerResponse
 		}
-		validatedCalls, validationError := w.validateToolCalls(response.ToolCalls, allowed, seen, toolCallLimit)
+		validatedCalls, replays, validationError := w.validateToolCalls(response.ToolCalls, allowed, seen, cachedReads, toolCallLimit)
 		if validationError != nil && !repairAttempted && iteration+1 < input.Step.Budget.MaxIterations && repairableToolCallError(validationError, response.ToolCalls, allowed) {
 			// Never replay a rejected assistant.tool_calls message. OpenAI-compatible
 			// APIs require every such message to be followed immediately by one tool
@@ -152,7 +153,16 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 			return result, validationError
 		}
 		batchStart := len(result.ToolResults)
-		toolMessages := make([]contracts.Message, 0, len(validatedCalls))
+		batchNames := make([]string, 0, len(validatedCalls)+len(replays))
+		toolMessages := make([]contracts.Message, 0, len(validatedCalls)+len(replays))
+		for _, replay := range replays {
+			// A repeated read-only request is served deterministically from the
+			// previous result instead of failing the step: the model still receives
+			// protocol-valid evidence, and the iteration budget bounds the loop.
+			result.ToolResults = append(result.ToolResults, replay.result)
+			batchNames = append(batchNames, replay.call.Name)
+			toolMessages = append(toolMessages, contracts.Message{Role: "tool", ToolCallID: replay.call.ID, Content: marshalReplayForModel(replay.result)})
+		}
 		for _, validated := range validatedCalls {
 			seen[validated.actionKey] = struct{}{}
 			toolResult, err := tool.Invoke(w.registry, validated.call.Name)(runContext, validated.arguments)
@@ -162,7 +172,11 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 			if err := runContext.Err(); err != nil {
 				return result, cancelledOrTimedOut(err)
 			}
+			if definition, found := toolDefinition(allowed, validated.call.Name); found && definition.RiskClass == contracts.RiskRead {
+				cachedReads[validated.actionKey] = toolResult
+			}
 			result.ToolResults = append(result.ToolResults, toolResult)
+			batchNames = append(batchNames, validated.call.Name)
 			if toolResult.Status == "WAITING_APPROVAL" || toolResult.Status == "WAITING_USER" {
 				return result, nil
 			}
@@ -178,7 +192,7 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 		if cumulativeExceeded(stepBudget, result.Usage) {
 			return result, contracts.NewError(contracts.ErrBudgetExceeded, "cumulative token budget exceeded")
 		}
-		if finalizable, stableFailures := finalizableReadBatch(validatedCalls, allowed, result.ToolResults[batchStart:]); iteration+1 == input.Step.Budget.MaxIterations && finalizable {
+		if finalizable, stableFailures := finalizableReadBatch(batchNames, allowed, result.ToolResults[batchStart:]); iteration+1 == input.Step.Budget.MaxIterations && finalizable {
 			// A tool call consumes a model iteration. Small models often use the last
 			// permitted turn for one final read outcome and therefore have no turn left
 			// to paraphrase evidence the controller already persisted. A stable,
@@ -192,13 +206,26 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 	return result, contracts.NewError(contracts.ErrBudgetExceeded, "step iteration budget exceeded")
 }
 
-func finalizableReadBatch(calls []validatedToolCall, allowed []contracts.ToolDefinition, results []contracts.ToolResult) (bool, int) {
-	if len(calls) == 0 || len(results) != len(calls) {
+type replayCall struct {
+	call   contracts.ToolCall
+	result contracts.ToolResult
+}
+
+func marshalReplayForModel(result contracts.ToolResult) string {
+	encoded, err := marshalToolResultForModel(result, toolResultTokenLimit(Input{}))
+	if err != nil {
+		return `{"status":"SUCCEEDED","summary":"duplicate read: previous identical result returned"}`
+	}
+	return string(encoded)
+}
+
+func finalizableReadBatch(names []string, allowed []contracts.ToolDefinition, results []contracts.ToolResult) (bool, int) {
+	if len(names) == 0 || len(results) != len(names) {
 		return false, 0
 	}
 	stableFailures := 0
-	for index, call := range calls {
-		definition, found := toolDefinition(allowed, call.call.Name)
+	for index, name := range names {
+		definition, found := toolDefinition(allowed, name)
 		if !found || definition.RiskClass != contracts.RiskRead {
 			return false, 0
 		}
@@ -238,37 +265,46 @@ func containsHan(value string) bool {
 	return false
 }
 
-func (w *Worker) validateToolCalls(calls []contracts.ToolCall, allowed []contracts.ToolDefinition, seen map[string]struct{}, limit int) ([]validatedToolCall, error) {
+func (w *Worker) validateToolCalls(calls []contracts.ToolCall, allowed []contracts.ToolDefinition, seen map[string]struct{}, cachedReads map[string]contracts.ToolResult, limit int) ([]validatedToolCall, []replayCall, error) {
 	if len(calls) > limit {
-		return nil, contracts.NewError(contracts.ErrInvalidToolCall, fmt.Sprintf("model requested %d tools in one response; the limit is %d", len(calls), limit))
+		return nil, nil, contracts.NewError(contracts.ErrInvalidToolCall, fmt.Sprintf("model requested %d tools in one response; the limit is %d", len(calls), limit))
 	}
 	validated := make([]validatedToolCall, 0, len(calls))
+	replays := make([]replayCall, 0)
 	batchActions := map[string]struct{}{}
 	callIDs := map[string]struct{}{}
 	for _, call := range calls {
 		if _, duplicate := callIDs[call.ID]; duplicate {
-			return nil, contracts.NewError(contracts.ErrInvalidToolCall, "tool call IDs must be unique within one response")
+			return nil, nil, contracts.NewError(contracts.ErrInvalidToolCall, "tool call IDs must be unique within one response")
 		}
 		callIDs[call.ID] = struct{}{}
 		definition, ok := w.registry.Definition(call.Name)
 		if !ok || !containsTool(allowed, call.Name) {
-			return nil, contracts.NewError(contracts.ErrToolNotAllowed, "requested tool is not allowed for this step")
+			return nil, nil, contracts.NewError(contracts.ErrToolNotAllowed, "requested tool is not allowed for this step")
 		}
 		arguments, canonical, err := decodeAndValidate(call, definition)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		key := actionKey(call.Name, canonical)
 		if _, duplicate := seen[key]; duplicate {
-			return nil, contracts.NewError(contracts.ErrRepeatedAction, "repeating an identical tool action is blocked")
+			if definition.RiskClass != contracts.RiskRead {
+				return nil, nil, contracts.NewError(contracts.ErrRepeatedAction, "repeating an identical mutating tool action is blocked")
+			}
+			cached, available := cachedReads[key]
+			if !available {
+				return nil, nil, contracts.NewError(contracts.ErrRepeatedAction, "repeating an identical tool action is blocked")
+			}
+			replays = append(replays, replayCall{call: call, result: cached})
+			continue
 		}
 		if _, duplicate := batchActions[key]; duplicate {
-			return nil, contracts.NewError(contracts.ErrRepeatedAction, "duplicate tool actions in one response are blocked")
+			return nil, nil, contracts.NewError(contracts.ErrRepeatedAction, "duplicate tool actions in one response are blocked")
 		}
 		batchActions[key] = struct{}{}
 		validated = append(validated, validatedToolCall{call: call, arguments: arguments, actionKey: key})
 	}
-	return validated, nil
+	return validated, replays, nil
 }
 
 func repairableToolCallError(err error, calls []contracts.ToolCall, allowed []contracts.ToolDefinition) bool {

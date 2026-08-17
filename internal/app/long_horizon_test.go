@@ -401,7 +401,7 @@ func TestLongHorizonAdvancesSegmentsAndWaitsAfterDesign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Spec.Budget.MaxSteps != 20 || created.Spec.Budget.MaxReplans != 4 || len(state.Plan.Stages) != 5 {
+	if created.Spec.Budget.MaxSteps != 40 || created.Spec.Budget.MaxReplans != 4 || len(state.Plan.Stages) != 5 {
 		t.Fatalf("long-horizon defaults were not applied: %#v %#v", created.Spec, state)
 	}
 	actions := []string{}

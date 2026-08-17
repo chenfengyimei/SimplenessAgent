@@ -1,16 +1,18 @@
 package horizon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
+	"fmt"
 	"strings"
 
 	"github.com/xm/simplenessagent/pkg/contracts"
 )
 
-const stageVerifierContract = `You are the SimplenessAgent Verifier. Review only the supplied persisted evidence for the current stage. Return one JSON object with summary, gate_appears_met, evidence_refs, risks, and recommended_check. Never claim the task is complete, never request a tool, and never invent evidence. Your opinion is advisory; deterministic acceptance owns all state transitions.`
+const (
+	stageVerifierContract = `You are the SimplenessAgent Verifier. Review only the supplied persisted evidence for the current stage. Return one JSON object with summary, gate_appears_met, evidence_refs, risks, and recommended_check. Never claim the task is complete, never request a tool, and never invent evidence. Your opinion is advisory; deterministic acceptance owns all state transitions.`
+	stageOpinionExample   = `{"summary":"stage evidence reviewed","gate_appears_met":true,"evidence_refs":["evd_1"],"risks":[],"recommended_check":"none"}`
+)
 
 type StageVerifier struct{ provider contracts.ChatProvider }
 
@@ -59,27 +61,73 @@ func (v *StageVerifier) Assess(ctx context.Context, input StageVerificationInput
 			return opinion, usage, nil
 		}
 		lastErr = decodeErr
-		messages = append(messages, contracts.Message{Role: "assistant", Content: response.Text}, contracts.Message{Role: "user", Content: "The verifier JSON was rejected: " + decodeErr.Error() + ". Return one corrected JSON object only."})
+		messages = append(messages, contracts.Message{Role: "assistant", Content: response.Text}, contracts.Message{Role: "user", Content: "The verifier JSON was rejected: " + decodeErr.Error() + ". Return one corrected JSON object only, starting with the JSON itself. Use exactly these fields: summary (string), gate_appears_met (boolean), evidence_refs (array of strings), risks (array of strings), recommended_check (string). Extra fields are not allowed. Exact shape example: " + stageOpinionExample})
 	}
 	return contracts.StageVerificationOpinion{}, usage, contracts.NewError(contracts.ErrInvalidResponse, "verifier failed after one format repair: "+lastErr.Error())
 }
 
 func decodeStageOpinion(text string) (contracts.StageVerificationOpinion, error) {
 	text = strings.TrimSpace(text)
-	if start, end := strings.IndexByte(text, '{'), strings.LastIndexByte(text, '}'); start >= 0 && end >= start {
-		text = text[start : end+1]
+	if text == "" {
+		return contracts.StageVerificationOpinion{}, contracts.NewError(contracts.ErrInvalidResponse, "verifier response is empty")
 	}
-	decoder := json.NewDecoder(bytes.NewBufferString(text))
-	decoder.DisallowUnknownFields()
-	var opinion contracts.StageVerificationOpinion
-	if err := decoder.Decode(&opinion); err != nil {
-		return opinion, contracts.NewError(contracts.ErrInvalidResponse, "response must match StageVerificationOpinion")
+	objects, scanErr := extractJSONObjects(text)
+	if len(objects) == 0 {
+		if scanErr != nil {
+			return contracts.StageVerificationOpinion{}, contracts.NewError(contracts.ErrInvalidResponse, "verifier response contains malformed JSON: "+scanErr.Error())
+		}
+		return contracts.StageVerificationOpinion{}, contracts.NewError(contracts.ErrInvalidResponse, "verifier response contains no JSON object")
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return opinion, contracts.NewError(contracts.ErrInvalidResponse, "verifier response contains trailing values")
+	var lastErr error
+	for _, object := range objects {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(object, &fields); err != nil {
+			lastErr = contracts.NewError(contracts.ErrInvalidResponse, "verifier response object is not valid JSON: "+err.Error())
+			continue
+		}
+		opinion, err := decodeOpinionFields(fields)
+		if err == nil {
+			return opinion, nil
+		}
+		lastErr = err
 	}
-	if strings.TrimSpace(opinion.Summary) == "" {
-		return opinion, contracts.NewError(contracts.ErrInvalidResponse, "verifier summary is required")
+	if lastErr == nil {
+		lastErr = contracts.NewError(contracts.ErrInvalidResponse, "verifier response contains no object with a summary field")
+	}
+	return contracts.StageVerificationOpinion{}, lastErr
+}
+
+func decodeOpinionFields(fields map[string]json.RawMessage) (contracts.StageVerificationOpinion, error) {
+	summaryRaw, ok := firstField(fields, "summary")
+	if !ok {
+		return contracts.StageVerificationOpinion{}, fmt.Errorf("summary is required")
+	}
+	var summary string
+	if err := json.Unmarshal(summaryRaw, &summary); err != nil || strings.TrimSpace(summary) == "" {
+		return contracts.StageVerificationOpinion{}, fmt.Errorf("summary must be a non-empty string")
+	}
+	opinion := contracts.StageVerificationOpinion{Summary: summary}
+	if gateRaw, ok := firstField(fields, "gate_appears_met", "gateAppearsMet", "gate_met", "gate", "passed"); ok {
+		var gate bool
+		if err := json.Unmarshal(gateRaw, &gate); err != nil {
+			return contracts.StageVerificationOpinion{}, fmt.Errorf("gate_appears_met must be a boolean")
+		}
+		opinion.GateAppearsMet = gate
+	}
+	if refsRaw, ok := firstField(fields, "evidence_refs", "evidenceRefs", "refs"); ok {
+		if err := json.Unmarshal(refsRaw, &opinion.EvidenceRefs); err != nil {
+			return contracts.StageVerificationOpinion{}, fmt.Errorf("evidence_refs must be an array of strings")
+		}
+	}
+	if risksRaw, ok := firstField(fields, "risks"); ok {
+		if err := json.Unmarshal(risksRaw, &opinion.Risks); err != nil {
+			return contracts.StageVerificationOpinion{}, fmt.Errorf("risks must be an array of strings")
+		}
+	}
+	if checkRaw, ok := firstField(fields, "recommended_check", "recommendedCheck", "check"); ok {
+		if err := json.Unmarshal(checkRaw, &opinion.RecommendedCheck); err != nil {
+			return contracts.StageVerificationOpinion{}, fmt.Errorf("recommended_check must be a string")
+		}
 	}
 	return opinion, nil
 }

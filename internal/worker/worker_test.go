@@ -151,19 +151,40 @@ func TestRunRejectsInvalidOrRepeatedToolActions(t *testing.T) {
 		_, err := worker.Run(context.Background(), Input{Step: testStep(3)})
 		assertCode(t, err, contracts.ErrInvalidToolCall)
 	})
-	t.Run("repeated action", func(t *testing.T) {
+	t.Run("repeated read is served from cache", func(t *testing.T) {
 		response := contracts.ChatResponse{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{"query":"same"}`}}}
-		provider := &scriptedProvider{responses: []contracts.ChatResponse{response, response}}
+		provider := &scriptedProvider{responses: []contracts.ChatResponse{response, response, {Text: "Used the replayed evidence."}}}
 		calls := 0
 		registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
 			calls++
 			return contracts.ToolResult{Status: "SUCCEEDED"}, nil
 		})
 		worker, _ := New(provider, registry)
-		result, err := worker.Run(context.Background(), Input{Step: testStep(2)})
+		result, err := worker.Run(context.Background(), Input{Step: testStep(3)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 || len(result.ToolResults) != 2 || result.Text != "Used the replayed evidence." {
+			t.Fatalf("repeated read should replay the cached result: calls=%d result=%#v", calls, result)
+		}
+	})
+	t.Run("repeated mutating action stays blocked", func(t *testing.T) {
+		response := contracts.ChatResponse{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "write_file", ArgumentsJSON: `{"path":"a","content":"x"}`}}}
+		provider := &scriptedProvider{responses: []contracts.ChatResponse{response, response, response}}
+		calls := 0
+		registry := tool.NewRegistry()
+		if err := registry.Register(contracts.ToolDefinition{Name: "write_file", RiskClass: contracts.RiskWrite, ParametersSchema: map[string]interface{}{"type": "object"}}, func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+			calls++
+			return contracts.ToolResult{Status: "SUCCEEDED"}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		worker, _ := New(provider, registry)
+		step := contracts.StepSpec{StepID: "step_1", Title: "Write", Goal: "Persist change", AllowedTools: []string{"write_file"}, WorkspaceScopes: []string{"."}, Budget: contracts.StepBudget{MaxIterations: 3}}
+		_, err := worker.Run(context.Background(), Input{Step: step})
 		assertCode(t, err, contracts.ErrRepeatedAction)
-		if calls != 1 || len(result.ToolResults) != 1 {
-			t.Fatalf("repeated action was invoked: %#v", result)
+		if calls != 1 {
+			t.Fatalf("mutating tool executed more than once: %d", calls)
 		}
 	})
 }
@@ -260,12 +281,12 @@ func TestRunPrevalidatesEntireToolBatchBeforeInvocation(t *testing.T) {
 	}
 }
 
-func TestRunRepairsRepeatedReadWithoutReplayingIt(t *testing.T) {
+func TestRunRepeatedReadIsServedFromCacheAsToolResponse(t *testing.T) {
 	repeated := contracts.ChatResponse{ToolCalls: []contracts.ToolCall{{ID: "read-again", Name: "lookup", ArgumentsJSON: `{"query":"same"}`}}}
 	provider := &scriptedProvider{responses: []contracts.ChatResponse{
 		{ToolCalls: []contracts.ToolCall{{ID: "read-once", Name: "lookup", ArgumentsJSON: `{"query":"same"}`}}},
 		repeated,
-		{Text: "Used the existing read evidence."},
+		{Text: "Used the replayed evidence."},
 	}, rejectOrphanToolCalls: true}
 	invocations := 0
 	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
@@ -277,12 +298,18 @@ func TestRunRepairsRepeatedReadWithoutReplayingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != "Used the existing read evidence." || invocations != 1 || len(result.ToolResults) != 1 || result.Iterations != 3 {
-		t.Fatalf("repeated read was replayed or not repaired: result=%#v invocations=%d", result, invocations)
+	if result.Text != "Used the replayed evidence." || invocations != 1 || len(result.ToolResults) != 2 || result.Iterations != 3 {
+		t.Fatalf("repeated read was re-executed instead of replayed from cache: result=%#v invocations=%d", result, invocations)
 	}
-	repair := provider.requests[2].Messages[len(provider.requests[2].Messages)-1]
-	if repair.Role != "user" || !strings.Contains(repair.Content, "earlier tool result is already present") {
-		t.Fatalf("repeated read repair did not point to existing evidence: %#v", repair)
+	second := provider.requests[2].Messages
+	var replayMessage *contracts.Message
+	for index := range second {
+		if second[index].Role == "tool" && second[index].ToolCallID == "read-again" {
+			replayMessage = &second[index]
+		}
+	}
+	if replayMessage == nil || !strings.Contains(replayMessage.Content, "existing evidence") {
+		t.Fatalf("replay did not return the cached result as a protocol tool response: %#v", second)
 	}
 }
 

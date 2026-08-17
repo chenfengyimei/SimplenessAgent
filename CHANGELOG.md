@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 2026-08-17 Verifier tolerance, read replay, larger horizon budget
+
+- 阶段验证器解码容错重构：复用规划器的 JSON 提取器（容忍思考前缀/代码围栏），移除 DisallowUnknownFields（思考型模型附加 confidence/verdict 等字段不再整体拒绝），接受 gate/gate_met/evidenceRefs/check 等常见别名，缺失 gate 默认 false（保守）；修复提示携带具体字段错误与完整形状示例；空响应错误改为明确诊断。
+- 执行器重复只读请求不再整步失败：以协议合法的 tool 响应回放缓存的先前结果（标注重复读），迭代预算仍约束循环；重复的写入/命令类调用依旧硬拒绝。
+- 长程预算扩容：默认与上限 20 步/2 小时 → 40 步/4 小时。"做个网页游戏"量级的任务此前会耗尽 20 步预算并进入不可恢复的 BUDGET_BLOCKED。
+
 ### 2026-08-17 Executor read-batching alignment
 
 - 修复执行器 profile 每响应工具上限与执行器契约的自相矛盾：契约承诺"可一次请求多个独立只读工具"，而默认/已持久化 profile 却限制 1 个，思考型模型按契约批量请求 2 个只读工具即触发 INVALID_TOOL_CALL，修复轮再次批量后整步失败。默认上限 1→4，旧任务恢复时下限钳制为 ≥4（操作员调高的值不会被压低）。

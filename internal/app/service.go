@@ -1226,10 +1226,10 @@ func (s *Service) CreateTask(ctx context.Context, input CreateTaskInput) (contra
 	}
 	if strategy == contracts.ExecutionStrategyIncrementalHorizon {
 		if input.Budget.MaxSteps == 0 {
-			input.Budget.MaxSteps = 20
+			input.Budget.MaxSteps = 40
 		}
 		if input.Budget.MaxDurationMS == 0 {
-			input.Budget.MaxDurationMS = int64((2 * time.Hour).Milliseconds())
+			input.Budget.MaxDurationMS = int64((4 * time.Hour).Milliseconds())
 		}
 		if input.Budget.MaxReplans == 0 {
 			input.Budget.MaxReplans = 4
@@ -1237,8 +1237,8 @@ func (s *Service) CreateTask(ctx context.Context, input CreateTaskInput) (contra
 		if input.Budget.MaxSegmentSteps == 0 {
 			input.Budget.MaxSegmentSteps = 4
 		}
-		if input.Budget.MaxSteps < 1 || input.Budget.MaxSteps > 20 || input.Budget.MaxReplans < 0 || input.Budget.MaxReplans > 4 || input.Budget.MaxSegmentSteps < 1 || input.Budget.MaxSegmentSteps > 4 || input.Budget.MaxDurationMS < 1 || input.Budget.MaxDurationMS > int64((2*time.Hour).Milliseconds()) {
-			return contracts.Task{}, contracts.PlanVersion{}, contracts.NewError(contracts.ErrBudgetExceeded, "long-horizon budget exceeds the 2 hour, 20 step, 4 replan, or 4 step segment limit")
+		if input.Budget.MaxSteps < 1 || input.Budget.MaxSteps > 40 || input.Budget.MaxReplans < 0 || input.Budget.MaxReplans > 4 || input.Budget.MaxSegmentSteps < 1 || input.Budget.MaxSegmentSteps > 4 || input.Budget.MaxDurationMS < 1 || input.Budget.MaxDurationMS > int64((4*time.Hour).Milliseconds()) {
+			return contracts.Task{}, contracts.PlanVersion{}, contracts.NewError(contracts.ErrBudgetExceeded, "long-horizon budget exceeds the 4 hour, 40 step, 4 replan, or 4 step segment limit")
 		}
 		if checkpointPolicyWasEmpty {
 			checkpointPolicy = contracts.StageCheckpointKeyStages
