@@ -207,6 +207,35 @@ func TestRunRepairsTooManyToolsBeforeAnyInvocation(t *testing.T) {
 	}
 }
 
+func TestRunRepairNamesAllowedTools(t *testing.T) {
+	provider := &scriptedProvider{responses: []contracts.ChatResponse{
+		{ToolCalls: []contracts.ToolCall{{ID: "forbidden", Name: "other", ArgumentsJSON: `{}`}}},
+		{ToolCalls: []contracts.ToolCall{{ID: "allowed", Name: "lookup", ArgumentsJSON: `{"query":"ok"}`}}},
+		{Text: "Recovered inside the allowlist."},
+	}, rejectOrphanToolCalls: true}
+	registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(_ context.Context, args map[string]interface{}) (contracts.ToolResult, error) {
+		return contracts.ToolResult{Status: "SUCCEEDED", Summary: "ok"}, nil
+	})
+	if err := registry.Register(contracts.ToolDefinition{Name: "other", RiskClass: contracts.RiskRead, ParametersSchema: map[string]interface{}{"type": "object"}}, func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+		t.Fatal("unallowed tool must not run")
+		return contracts.ToolResult{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	worker, _ := New(provider, registry)
+	result, err := worker.Run(context.Background(), Input{Step: testStep(3), MaxToolCallsPerResponse: 1})
+	if err != nil || result.Text != "Recovered inside the allowlist." {
+		t.Fatalf("allowlist repair did not recover: result=%#v err=%v", result, err)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected exactly one repair round, got %d requests", len(provider.requests))
+	}
+	repair := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content
+	if !strings.Contains(repair, "ONLY tools allowed for this step are: lookup") || !strings.Contains(repair, "at most 1 tool call(s)") {
+		t.Fatalf("repair prompt did not name the allowlist and limit: %s", repair)
+	}
+}
+
 func TestRunPrevalidatesEntireToolBatchBeforeInvocation(t *testing.T) {
 	provider := &scriptedProvider{responses: []contracts.ChatResponse{
 		{ToolCalls: []contracts.ToolCall{

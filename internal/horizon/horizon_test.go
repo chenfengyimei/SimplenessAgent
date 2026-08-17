@@ -112,6 +112,52 @@ func TestSegmentPlannerReportsTokenExhaustionDiagnosisForEmptyReplies(t *testing
 	}
 }
 
+func TestBuildPlanGrantsMutatingStepsReadToolsDeterministically(t *testing.T) {
+	provider := mock.Provider{Response: `{"summary":"implement change","terminal_segment":true,"steps":[{"ref":"write","title":"Write the file","goal":"Persist the approved change","tool_intents":["write_file"],"acceptance_intent":"The file contains the change"}]}`}
+	planner, _ := NewSegmentPlanner(provider)
+	now := time.Now().UTC()
+	horizonPlan := DefaultPlan("task", now)
+	tools := []contracts.ToolDefinition{
+		{Name: "list_files", RiskClass: contracts.RiskRead, ParametersSchema: map[string]interface{}{"type": "object"}},
+		{Name: "read_file", RiskClass: contracts.RiskRead, ParametersSchema: map[string]interface{}{"type": "object"}},
+		{Name: "write_file", RiskClass: contracts.RiskWrite, ParametersSchema: map[string]interface{}{"type": "object"}},
+	}
+	result, _, err := planner.Create(context.Background(), SegmentInput{
+		DeploymentID: "dep",
+		Task:         contracts.Task{ID: "task", Goal: "goal", Spec: contracts.TaskSpec{TaskID: "task", Budget: contracts.TaskBudget{MaxSteps: 20, MaxSegmentSteps: 4}}},
+		Horizon:      contracts.HorizonState{HorizonID: horizonPlan.HorizonID, Plan: horizonPlan},
+		Stage:        horizonPlan.Stages[2],
+		Tools:        tools,
+		Profile:      DefaultProfiles("dep", now)[0],
+		Revision:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("unexpected step count: %#v", result.Steps)
+	}
+	allowed := result.Steps[0].AllowedTools
+	if len(allowed) != 3 {
+		t.Fatalf("write step should carry the stage read tools: %#v", allowed)
+	}
+	for _, name := range []string{"list_files", "read_file", "write_file"} {
+		found := false
+		for _, item := range allowed {
+			if item == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("write step allowlist missing %s: %#v", name, allowed)
+		}
+	}
+	if result.Steps[0].Risk != contracts.RiskWrite {
+		t.Fatalf("enrichment must not raise the step risk: %#v", result.Steps[0].Risk)
+	}
+}
+
 func TestDecodeCandidateAcceptsThinkingPrefixWrapperAndCommonAliases(t *testing.T) {
 	response := `<think>{"analysis":"inspect before planning"}</think>
 ~~~json

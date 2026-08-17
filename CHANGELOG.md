@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 2026-08-17 Mutating-step read enrichment
+
+- 长程规划器构建 Plan 时，对含写入/命令工具的步骤确定性附加该阶段全部只读工具：执行器"先读现状再写入"的自然请求不再触发 TOOL_NOT_ALLOWED 失败；只读工具不提升步骤风险等级，不扩大变更面。
+- Worker 工具修复提示现在明确列出该步骤唯一允许的工具名与单响应调用上限，模型可在修复轮内改用白名单工具而非重复越界请求后整步失败。
+
 ### 2026-08-17 Reasoning-model empty-answer recovery
 
 - OpenAI 兼容 Provider 现解析 `reasoning_content`/`reasoning` 字段：思考型本地模型把输出预算全部耗在隐藏推理、正文为空时，回退用推理文本作为答案（结构化 JSON 提取器本就容忍推理噪音）；流式路径聚合推理增量但不混入实时文本流。

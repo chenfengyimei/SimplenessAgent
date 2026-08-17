@@ -144,7 +144,7 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 			// APIs require every such message to be followed immediately by one tool
 			// response per tool_call_id; a controller repair instruction is not a tool
 			// response and would make the next provider request invalid.
-			messages = append(messages, contracts.Message{Role: "user", Content: toolCallRepairInstruction(validationError)})
+			messages = append(messages, contracts.Message{Role: "user", Content: toolCallRepairInstruction(validationError, allowed, toolCallLimit)})
 			repairAttempted = true
 			continue
 		}
@@ -291,12 +291,16 @@ func repairableToolCallError(err error, calls []contracts.ToolCall, allowed []co
 	return true
 }
 
-func toolCallRepairInstruction(err error) string {
+func toolCallRepairInstruction(err error, allowed []contracts.ToolDefinition, limit int) string {
 	var domain *contracts.Error
 	if errors.As(err, &domain) && domain.Code == contracts.ErrRepeatedAction {
 		return "The controller did not execute your repeated read request: " + err.Error() + ". Its earlier tool result is already present in the conversation. Use that existing evidence and either request a different necessary read or return your evidence-based response."
 	}
-	return "The controller rejected your previous tool request before executing any tool: " + err.Error() + ". Fix it and retry. Request no more than the configured number of tools, and ensure every tool argument is valid JSON matching its parameter schema."
+	names := make([]string, 0, len(allowed))
+	for _, definition := range allowed {
+		names = append(names, definition.Name)
+	}
+	return "The controller rejected your previous tool request before executing any tool: " + err.Error() + ". Fix it and retry. The ONLY tools allowed for this step are: " + strings.Join(names, ", ") + ". You may request at most " + fmt.Sprintf("%d", limit) + " tool call(s) per response, and every tool argument must be valid JSON matching its parameter schema."
 }
 
 func toolDefinition(definitions []contracts.ToolDefinition, name string) (contracts.ToolDefinition, bool) {

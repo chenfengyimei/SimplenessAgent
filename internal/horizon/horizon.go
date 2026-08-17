@@ -398,6 +398,20 @@ func buildPlan(candidate contracts.NextSegmentCandidate, input SegmentInput) (co
 				risk = definition.RiskClass
 			}
 		}
+		if risk != contracts.RiskRead {
+			// A mutating step almost always needs to re-read current state before
+			// acting. Deterministically grant the stage's read tools so a
+			// natural read-before-write request does not fail the step as
+			// TOOL_NOT_ALLOWED; this adds no mutating power.
+			for _, definition := range input.Tools {
+				if definition.RiskClass != contracts.RiskRead || seenTools[definition.Name] {
+					continue
+				}
+				seenTools[definition.Name] = true
+				item.ToolIntents = append(item.ToolIntents, definition.Name)
+			}
+			sort.Strings(item.ToolIntents)
+		}
 		intentTools := append([]string{}, item.ToolIntents...)
 		sort.Strings(intentTools)
 		intentKey := strings.ToLower(strings.Join(strings.Fields(item.Goal), " ")) + "\x00" + strings.Join(intentTools, "\x00")
