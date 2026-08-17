@@ -481,6 +481,14 @@ func (s *Service) finishHorizonSegment(ctx context.Context, item contracts.Task,
 		state.Status = contracts.HorizonWaiting
 		state.AwaitingCheckpoint = true
 		state.CheckpointReason = "stage " + string(stage.ID) + " completed; approve before " + string(currentStage(state).ID)
+		// Entering IMPLEMENT with a read-only permission mode can never produce
+		// files. Surface that fact at the checkpoint instead of letting the task
+		// "complete" with reports only.
+		if currentStage(state).ID == contracts.HorizonStageImplement {
+			if mode, modeErr := taskPermissionMode(item); modeErr == nil && mode == contracts.PermissionModePlan {
+				state.CheckpointReason = "stage " + string(stage.ID) + " completed; approve before IMPLEMENT（注意：本任务为只读 PLAN 权限，执行阶段无法创建或修改文件，只能继续产出侦察报告；如需生成文件请取消并以 EDIT 权限新建任务）"
+			}
+		}
 		if item.Status == contracts.TaskRunning {
 			if err := s.transitionTask(ctx, item.ID, contracts.TaskRunning, contracts.TaskWaitingUser, "HORIZON_STAGE_CHECKPOINT"); err != nil {
 				return contracts.LongHorizonCycleResult{}, err

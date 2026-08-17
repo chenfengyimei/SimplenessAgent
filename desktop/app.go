@@ -526,31 +526,42 @@ func (a *App) GetLongHorizonStatus(taskID string) (contracts.HorizonState, error
 // buildLongHorizonCompletionSummary composes the user-facing completion message:
 // what was accomplished, which files were produced, where they live and how to
 // launch the result. Everything is deterministic — the model's own final step
-// report is quoted, never re-generated.
+// report is quoted, never re-generated. A task that completed without leaving
+// any product file is reported as a warning, never as a success.
 func (a *App) buildLongHorizonCompletionSummary(service *app.Service, taskID string, cycle contracts.LongHorizonCycleResult) (string, error) {
 	snapshot, err := service.GetTaskSnapshot(a.ctx, taskID)
 	if err != nil {
 		return "", err
 	}
 	goal := strings.TrimSpace(snapshot.Task.Goal)
-	var builder strings.Builder
-	builder.WriteString("✅ 长程任务已完成，最终验收通过。\n\n")
-	builder.WriteString("【目标】" + goal + "\n")
-	if agentSummary := latestAgentReportSummary(service, taskID); agentSummary != "" {
-		builder.WriteString("\n【Agent 最终报告】\n" + agentSummary + "\n")
+	permissionNotice := ""
+	if mode, modeErr := contracts.ParsePermissionMode(snapshot.Task.Spec.PermissionProfileID); modeErr == nil && mode == contracts.PermissionModePlan {
+		permissionNotice = "\n\n【原因】本任务创建时选择了只读（PLAN）权限：执行阶段只能查看和检索文件，无法创建或修改任何文件，因此整个任务只产出了侦察报告。"
 	}
 	workspaceRoot := ""
 	if workspaceItem, workspaceErr := service.GetWorkspaceByID(a.ctx, snapshot.Task.WorkspaceID); workspaceErr == nil {
 		workspaceRoot = workspaceItem.RootPath
 	}
-	if files, launch := scanWorkspaceForLaunch(workspaceRoot); len(files) > 0 {
-		builder.WriteString("\n【产出文件】（工作区：" + workspaceRoot + "）\n")
-		for _, file := range files {
-			builder.WriteString("- " + file + "\n")
-		}
-		if launch != "" {
-			builder.WriteString("\n【如何启动】\n" + launch)
-		}
+	files, launch := scanWorkspaceForLaunch(workspaceRoot)
+	var builder strings.Builder
+	if len(files) == 0 {
+		builder.WriteString("⚠️ 任务已标记完成，但工作区没有产出任何文件。\n\n【目标】" + goal + "\n")
+		builder.WriteString("\n【结果】最终验收只确认了 Agent 报告的存在，没有可交付的文件。" + permissionNotice)
+		builder.WriteString("\n\n【如何重做】新建任务时把权限设为 EDIT（可写入）：Agent 提出的每个文件修改仍会先弹出审批，你确认后才会写入磁盘。")
+		builder.WriteString(fmt.Sprintf("\n\n【执行统计】完成 %d 步，Token 用量见任务详情。", cycle.StepsCompleted))
+		return builder.String(), nil
+	}
+	builder.WriteString("✅ 长程任务已完成，最终验收通过。\n\n")
+	builder.WriteString("【目标】" + goal + "\n")
+	if agentSummary := latestAgentReportSummary(service, taskID); agentSummary != "" {
+		builder.WriteString("\n【Agent 最终报告】\n" + agentSummary + "\n")
+	}
+	builder.WriteString("\n【产出文件】（工作区：" + workspaceRoot + "）\n")
+	for _, file := range files {
+		builder.WriteString("- " + file + "\n")
+	}
+	if launch != "" {
+		builder.WriteString("\n【如何启动】\n" + launch)
 	}
 	builder.WriteString(fmt.Sprintf("\n\n【执行统计】完成 %d 步（另有 %d 步来自失败后被替换的旧计划段，未重复执行），Token 用量见任务详情。", cycle.StepsCompleted, cycle.StepsPlanned-cycle.StepsCompleted))
 	return builder.String(), nil

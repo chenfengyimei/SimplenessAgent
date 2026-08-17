@@ -54,7 +54,7 @@ function openArtifacts(turn: Turn) {
             <section v-if="store.turnFor(message)?.snapshot?.horizon" class="horizon-card">
               <div>
                 <b>{{ store.turnFor(message)?.snapshot?.horizon?.plan.stages[store.turnFor(message)?.snapshot?.horizon?.current_stage_index ?? 0]?.stage_id ?? 'FINALIZE' }}</b>
-                <span>{{ store.turnFor(message)?.snapshot?.horizon?.steps_completed }}/{{ store.turnFor(message)?.snapshot?.horizon?.steps_planned }} 步 · 剩余 {{ 20 - (store.turnFor(message)?.snapshot?.horizon?.steps_planned ?? 0) }}</span>
+                <span>{{ store.turnFor(message)?.snapshot?.horizon?.steps_completed }}/{{ store.turnFor(message)?.snapshot?.horizon?.steps_planned }} 步 · 剩余 {{ Math.max(0, (store.turnFor(message)?.snapshot?.task?.spec?.budget?.max_steps ?? 40) - (store.turnFor(message)?.snapshot?.horizon?.steps_planned ?? 0)) }}</span>
               </div>
               <p>重规划 {{ store.turnFor(message)?.snapshot?.horizon?.replans_used }}/4 · Token {{ store.turnFor(message)?.snapshot?.horizon?.usage.input_tokens }} 入 / {{ store.turnFor(message)?.snapshot?.horizon?.usage.output_tokens }} 出</p>
               <p v-if="store.turnFor(message)?.snapshot?.steps?.find(step => ['PENDING', 'READY', 'RUNNING'].includes(step.status))">当前步骤：{{ store.turnFor(message)?.snapshot?.steps?.find(step => ['PENDING', 'READY', 'RUNNING'].includes(step.status))?.title }}</p>
@@ -137,7 +137,7 @@ function openArtifacts(turn: Turn) {
         </div>
         <button class="send-button" :disabled="!store.canSend" @click="store.sendMessage">发送 <span>↑</span></button>
       </div>
-      <small class="mode-note">{{ store.executionStrategy === 'INCREMENTAL_HORIZON' ? '长程 Agent' : '单次计划' }} · {{ modeLabel(store.permissionMode) }}：{{ modeHint(store.permissionMode) }}</small>
+      <small class="mode-note">{{ store.executionStrategy === 'INCREMENTAL_HORIZON' ? '长程 Agent' : '单次计划' }} · {{ modeLabel(store.permissionMode) }}：{{ modeHint(store.permissionMode) }}<template v-if="store.executionStrategy === 'INCREMENTAL_HORIZON' && store.permissionMode === 'PLAN'"> ⚠️ 只读权限下长程任务无法创建或修改文件，只会产出侦察报告；需要生成文件请切换到编辑模式。</template></small>
     </div>
   </section>
 </template>
