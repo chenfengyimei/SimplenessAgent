@@ -222,6 +222,56 @@ func TestSegmentPlannerRepairIncludesSpecificSchemaError(t *testing.T) {
 	}
 }
 
+func TestBuildPlanRequiresMutatingIntentInImplementStage(t *testing.T) {
+	allRead := `{"summary":"read again","terminal_segment":true,"steps":[{"ref":"scan","title":"Scan","goal":"Read files","tool_intents":["read_file"],"acceptance_intent":"files listed"}]}`
+	provider := &plannerScriptProvider{responses: []string{
+		allRead,
+		`{"summary":"write the game","terminal_segment":true,"steps":[{"ref":"write","title":"Write entry","goal":"Create index.html with the game","tool_intents":["propose_file_batch"],"acceptance_intent":"index.html exists"}]}`,
+	}}
+	planner, _ := NewSegmentPlanner(provider)
+	now := time.Now().UTC()
+	horizonPlan := DefaultPlan("task", now)
+	tools := []contracts.ToolDefinition{
+		{Name: "read_file", RiskClass: contracts.RiskRead, ParametersSchema: map[string]interface{}{"type": "object"}},
+		{Name: "propose_file_batch", RiskClass: contracts.RiskWrite, ParametersSchema: map[string]interface{}{"type": "object"}},
+	}
+	result, _, err := planner.Create(context.Background(), SegmentInput{
+		DeploymentID: "dep",
+		Task:         contracts.Task{ID: "task", Goal: "build a web game", Spec: contracts.TaskSpec{TaskID: "task", Budget: contracts.TaskBudget{MaxSteps: 20, MaxSegmentSteps: 4}}},
+		Horizon:      contracts.HorizonState{HorizonID: horizonPlan.HorizonID, Plan: horizonPlan},
+		Stage:        horizonPlan.Stages[2],
+		Tools:        tools,
+		Profile:      DefaultProfiles("dep", now)[0],
+		Revision:     1,
+	})
+	if err != nil || len(result.Steps) != 1 {
+		t.Fatalf("write-intent repair did not recover: plan=%#v err=%v", result, err)
+	}
+	repair := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content
+	if !strings.Contains(repair, "IMPLEMENT segment must include at least one write or command tool intent") {
+		t.Fatalf("repair prompt lost the mutating-intent requirement: %s", repair)
+	}
+}
+
+func TestBuildPlanSkipsMutatingGateWithoutMutatingTools(t *testing.T) {
+	provider := mock.Provider{Response: `{"summary":"read only","terminal_segment":true,"steps":[{"ref":"scan","title":"Scan","goal":"Read files","tool_intents":["read_file"],"acceptance_intent":"files listed"}]}`}
+	planner, _ := NewSegmentPlanner(provider)
+	now := time.Now().UTC()
+	horizonPlan := DefaultPlan("task", now)
+	result, _, err := planner.Create(context.Background(), SegmentInput{
+		DeploymentID: "dep",
+		Task:         contracts.Task{ID: "task", Goal: "analyze", Spec: contracts.TaskSpec{TaskID: "task", Budget: contracts.TaskBudget{MaxSteps: 20, MaxSegmentSteps: 4}}},
+		Horizon:      contracts.HorizonState{HorizonID: horizonPlan.HorizonID, Plan: horizonPlan},
+		Stage:        horizonPlan.Stages[2],
+		Tools:        []contracts.ToolDefinition{{Name: "read_file", RiskClass: contracts.RiskRead, ParametersSchema: map[string]interface{}{"type": "object"}}},
+		Profile:      DefaultProfiles("dep", now)[0],
+		Revision:     1,
+	})
+	if err != nil || len(result.Steps) != 1 {
+		t.Fatalf("read-only mode IMPLEMENT segment must not be rejected by the mutating gate: plan=%#v err=%v", result, err)
+	}
+}
+
 func TestSegmentPlannerReportsSpecificErrorAfterRepair(t *testing.T) {
 	provider := mock.Provider{Response: `{"summary":7,"terminal_segment":true,"steps":[]}`}
 	planner, _ := NewSegmentPlanner(provider)

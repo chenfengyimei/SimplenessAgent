@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 2026-08-17 IMPLEMENT write-intent enforcement
+
+- 修复 EDIT 模式下长程任务零产出：规划器契约示例只展示只读工具，思考型模型锚定示例，22 步全部只读、从未请求写入工具，任务最终零文件"完成"。现 IMPLEMENT 阶段确定性门禁：当写入/命令工具可用（EDIT/DEVELOPMENT 权限）而候选段无任何写入意图时，拒绝并要求修复轮至少一个步骤引用写入工具；只读（PLAN）权限无写工具可用时跳过门禁，保持旧行为。
+- 规划器契约增加 IMPLEMENT 阶段工具指引；执行器契约明确：步骤目标需要创建/修改文件时必须使用提供的写入工具提交提案，只读证据无法满足写入目标。
+
 ### 2026-08-17 Verifier tolerance, read replay, larger horizon budget
 
 - 阶段验证器解码容错重构：复用规划器的 JSON 提取器（容忍思考前缀/代码围栏），移除 DisallowUnknownFields（思考型模型附加 confidence/verdict 等字段不再整体拒绝），接受 gate/gate_met/evidenceRefs/check 等常见别名，缺失 gate 默认 false（保守）；修复提示携带具体字段错误与完整形状示例；空响应错误改为明确诊断。
