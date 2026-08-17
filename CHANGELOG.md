@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 2026-08-17 Reasoning-model empty-answer recovery
+
+- OpenAI 兼容 Provider 现解析 `reasoning_content`/`reasoning` 字段：思考型本地模型把输出预算全部耗在隐藏推理、正文为空时，回退用推理文本作为答案（结构化 JSON 提取器本就容忍推理噪音）；流式路径聚合推理增量但不混入实时文本流。
+- 长程规划预算提升：Planner 输出 1536→3072、Executor 768→1536、Verifier 512→1024，段内步骤输出预算 768→1536；恢复旧任务时对已持久化 Profile 施加同楼下限钳制，避免同样的空响应失败。
+- 规划器空响应错误现在携带 `finish_reason` 与输出 token 诊断（指向"预算被隐藏推理耗尽"），修复轮提示改为明确指令：以 JSON 开头、禁止先思考。
+
 ### 2026-08-11 Approved file writer
 
 - 新增显式注册的 `write_file` 执行器：参数、工作区边界和预期内容哈希均通过校验后，才会调用参数绑定的审批回调。

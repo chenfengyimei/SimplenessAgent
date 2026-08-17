@@ -33,9 +33,9 @@ func DefaultPlan(taskID string, now time.Time) contracts.HorizonPlan {
 
 func DefaultProfiles(deploymentID string, now time.Time) []contracts.ModelRoleProfile {
 	return []contracts.ModelRoleProfile{
-		{Version: contracts.SchemaVersion, ID: task.NewID("mpr"), DeploymentID: deploymentID, Role: contracts.ModelRolePlanner, Temperature: 0.1, MaxOutputTokens: 1536, MaxIterations: 2, MaxToolCalls: 0, CreatedAt: now, UpdatedAt: now},
-		{Version: contracts.SchemaVersion, ID: task.NewID("mpr"), DeploymentID: deploymentID, Role: contracts.ModelRoleExecutor, Temperature: 0.1, MaxOutputTokens: 768, MaxIterations: 4, MaxToolCalls: 1, CreatedAt: now, UpdatedAt: now},
-		{Version: contracts.SchemaVersion, ID: task.NewID("mpr"), DeploymentID: deploymentID, Role: contracts.ModelRoleVerifier, Temperature: 0, MaxOutputTokens: 512, MaxIterations: 1, MaxToolCalls: 0, CreatedAt: now, UpdatedAt: now},
+		{Version: contracts.SchemaVersion, ID: task.NewID("mpr"), DeploymentID: deploymentID, Role: contracts.ModelRolePlanner, Temperature: 0.1, MaxOutputTokens: 3072, MaxIterations: 2, MaxToolCalls: 0, CreatedAt: now, UpdatedAt: now},
+		{Version: contracts.SchemaVersion, ID: task.NewID("mpr"), DeploymentID: deploymentID, Role: contracts.ModelRoleExecutor, Temperature: 0.1, MaxOutputTokens: 1536, MaxIterations: 4, MaxToolCalls: 1, CreatedAt: now, UpdatedAt: now},
+		{Version: contracts.SchemaVersion, ID: task.NewID("mpr"), DeploymentID: deploymentID, Role: contracts.ModelRoleVerifier, Temperature: 0, MaxOutputTokens: 1024, MaxIterations: 1, MaxToolCalls: 0, CreatedAt: now, UpdatedAt: now},
 	}
 }
 
@@ -86,6 +86,7 @@ func (p *SegmentPlanner) Create(ctx context.Context, input SegmentInput) (contra
 		}
 		usage.InputTokens += response.Usage.InputTokens
 		usage.OutputTokens += response.Usage.OutputTokens
+		emptyResponse := strings.TrimSpace(response.Text) == ""
 		candidate, decodeErr := decodeCandidate(response.Text)
 		if decodeErr == nil {
 			var built contracts.PlanVersion
@@ -95,9 +96,27 @@ func (p *SegmentPlanner) Create(ctx context.Context, input SegmentInput) (contra
 			}
 		}
 		lastErr = decodeErr
-		messages = append(messages, contracts.Message{Role: "assistant", Content: response.Text}, contracts.Message{Role: "user", Content: "The candidate was rejected: " + decodeErr.Error() + ". Return one corrected JSON object only, with no wrapper or commentary. Exact shape example: " + segmentCandidateExample})
+		if emptyResponse {
+			lastErr = emptySegmentResponseError(response, input.Profile.MaxOutputTokens)
+		}
+		messages = append(messages, contracts.Message{Role: "assistant", Content: response.Text}, contracts.Message{Role: "user", Content: segmentRepairInstruction(lastErr, emptyResponse)})
 	}
 	return contracts.PlanVersion{}, usage, contracts.NewError(contracts.ErrPlanInvalid, "incremental planner failed after one repair: "+lastErr.Error())
+}
+
+func emptySegmentResponseError(response contracts.ChatResponse, maxOutputTokens int) error {
+	finish := response.FinishReason
+	if finish == "" {
+		finish = "unknown"
+	}
+	return contracts.NewError(contracts.ErrPlanInvalid, fmt.Sprintf("segment response is empty (finish_reason=%s, output_tokens=%d of %d); the model likely spent its output budget on hidden reasoning before emitting an answer", finish, response.Usage.OutputTokens, maxOutputTokens))
+}
+
+func segmentRepairInstruction(cause error, emptyResponse bool) string {
+	if emptyResponse {
+		return "The previous reply contained no answer text: " + cause.Error() + ". Begin your reply with the JSON object itself as the very first characters. Do not reason, think, or write any preamble before the JSON. Exact shape example: " + segmentCandidateExample
+	}
+	return "The candidate was rejected: " + cause.Error() + ". Return one corrected JSON object only, with no wrapper or commentary. Exact shape example: " + segmentCandidateExample
 }
 
 func validateSegmentInput(input SegmentInput) error {
@@ -386,7 +405,7 @@ func buildPlan(candidate contracts.NextSegmentCandidate, input SegmentInput) (co
 			return contracts.PlanVersion{}, contracts.NewError(contracts.ErrRepeatedAction, "segment repeats an identical step goal and tool intent")
 		}
 		seenStepIntents[intentKey] = true
-		steps = append(steps, contracts.StepSpec{Version: contracts.SchemaVersion, StepID: ids[item.Ref], Title: item.Title, Goal: item.Goal, Dependencies: dependencies, AllowedTools: append([]string{}, item.ToolIntents...), WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "segment-evidence-" + item.Ref, Type: contracts.AcceptanceEvidenceExists, Description: item.AcceptanceIntent, Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: risk, Budget: contracts.StepBudget{MaxAttempts: 2, MaxIterations: 4, MaxDurationMS: int64((15 * time.Minute).Milliseconds()), MaxInputTokens: 8192, MaxOutputTokens: 768}, ExecutionMode: "AGENT", PreferredRole: string(contracts.ModelRoleExecutor)})
+		steps = append(steps, contracts.StepSpec{Version: contracts.SchemaVersion, StepID: ids[item.Ref], Title: item.Title, Goal: item.Goal, Dependencies: dependencies, AllowedTools: append([]string{}, item.ToolIntents...), WorkspaceScopes: []string{"."}, ExpectedOutputs: []contracts.ExpectedOutput{{Name: "agent_report", Type: "ARTIFACT", Required: true}}, AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "segment-evidence-" + item.Ref, Type: contracts.AcceptanceEvidenceExists, Description: item.AcceptanceIntent, Spec: map[string]interface{}{"kind": "AGENT_REPORT"}}}, Risk: risk, Budget: contracts.StepBudget{MaxAttempts: 2, MaxIterations: 4, MaxDurationMS: int64((15 * time.Minute).Milliseconds()), MaxInputTokens: 8192, MaxOutputTokens: 1536}, ExecutionMode: "AGENT", PreferredRole: string(contracts.ModelRoleExecutor)})
 	}
 	revision := input.Revision
 	result := contracts.PlanVersion{Version: contracts.SchemaVersion, PlanID: task.NewID("pln"), TaskID: input.Task.ID, Revision: revision, ParentPlanID: input.ParentPlanID, Reason: "INCREMENTAL_SEGMENT", Summary: candidate.Summary, Steps: steps, CreatedByAgent: "small-model-segment-planner", CreatedAt: time.Now().UTC(), HorizonID: input.Horizon.HorizonID, StageID: string(input.Stage.ID), SegmentIndex: input.Horizon.SegmentIndex + 1, TerminalSegment: candidate.TerminalSegment}

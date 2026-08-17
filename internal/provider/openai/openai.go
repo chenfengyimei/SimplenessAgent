@@ -120,7 +120,7 @@ func (p *Provider) ChatStream(ctx context.Context, request contracts.ChatRequest
 
 	scanner := bufio.NewScanner(io.LimitReader(response.Body, 8*1024*1024))
 	scanner.Buffer(make([]byte, 4*1024), 1024*1024)
-	var text strings.Builder
+	var text, reasoning strings.Builder
 	var messageID, finishReason string
 	var usage contracts.TokenUsage
 	calls := map[int]*contracts.ToolCall{}
@@ -154,6 +154,10 @@ func (p *Provider) ChatStream(ctx context.Context, request contracts.ChatRequest
 				if err := sink(contracts.StreamEvent{Type: contracts.StreamEventTextDelta, TextDelta: choice.Delta.Content, Sequence: sequence}); err != nil {
 					return err
 				}
+			} else if reasoningDelta := firstNonEmpty(choice.Delta.ReasoningContent, choice.Delta.Reasoning); reasoningDelta != "" {
+				// Thinking deltas stay out of the live text stream; they only
+				// rescue the aggregate when no visible answer ever arrives.
+				reasoning.WriteString(reasoningDelta)
 			}
 			for _, delta := range choice.Delta.ToolCalls {
 				call := calls[delta.Index]
@@ -194,7 +198,11 @@ func (p *Provider) ChatStream(ctx context.Context, request contracts.ChatRequest
 	if err != nil {
 		return err
 	}
-	result := contracts.ChatResponse{MessageID: messageID, Text: text.String(), ToolCalls: toolCalls, FinishReason: finishReason, Usage: usage, Latency: time.Since(started)}
+	finalText := text.String()
+	if strings.TrimSpace(finalText) == "" {
+		finalText = reasoning.String()
+	}
+	result := contracts.ChatResponse{MessageID: messageID, Text: finalText, ToolCalls: toolCalls, FinishReason: finishReason, Usage: usage, Latency: time.Since(started)}
 	sequence++
 	return sink(contracts.StreamEvent{Type: contracts.StreamEventCompleted, Response: &result, Sequence: sequence})
 }
@@ -505,8 +513,13 @@ type completionChoice struct {
 	FinishReason string            `json:"finish_reason"`
 }
 type completionMessage struct {
-	Content   json.RawMessage `json:"content"`
-	ToolCalls []wireToolCall  `json:"tool_calls"`
+	Content json.RawMessage `json:"content"`
+	// ReasoningContent/Reasoning capture chain-of-thought fields emitted by
+	// thinking-style models (vLLM/sglang expose reasoning_content, some
+	// gateways use reasoning). They are only surfaced when Content is empty.
+	ReasoningContent json.RawMessage `json:"reasoning_content"`
+	Reasoning        json.RawMessage `json:"reasoning"`
+	ToolCalls        []wireToolCall  `json:"tool_calls"`
 }
 type chatCompletionChunk struct {
 	ID      string        `json:"id"`
@@ -518,8 +531,10 @@ type chunkChoice struct {
 	FinishReason string     `json:"finish_reason"`
 }
 type chunkDelta struct {
-	Content   string          `json:"content"`
-	ToolCalls []chunkToolCall `json:"tool_calls"`
+	Content          string          `json:"content"`
+	ReasoningContent string          `json:"reasoning_content"`
+	Reasoning        string          `json:"reasoning"`
+	ToolCalls        []chunkToolCall `json:"tool_calls"`
 }
 type chunkToolCall struct {
 	Index    int              `json:"index"`
@@ -536,6 +551,9 @@ func normalizeCompletion(payload chatCompletion) (contracts.ChatResponse, error)
 	text, err := contentString(choice.Message.Content)
 	if err != nil {
 		return contracts.ChatResponse{}, err
+	}
+	if strings.TrimSpace(text) == "" {
+		text = reasoningFallback(choice.Message.ReasoningContent, choice.Message.Reasoning)
 	}
 	calls := make(map[int]*contracts.ToolCall, len(choice.Message.ToolCalls))
 	for index, call := range choice.Message.ToolCalls {
@@ -559,6 +577,20 @@ func contentString(content json.RawMessage) (string, error) {
 	return "", contracts.NewError(contracts.ErrInvalidResponse, "provider response content must be text")
 }
 
+// reasoningFallback recovers the answer for thinking-style models that spend
+// the whole max_tokens budget on chain-of-thought and return an empty content
+// field. Downstream consumers (segment planner, verifier) already tolerate
+// reasoning noise when extracting structured JSON.
+func reasoningFallback(fields ...json.RawMessage) string {
+	for _, field := range fields {
+		text, err := contentString(field)
+		if err == nil && strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return ""
+}
+
 func malformedCompletionMessage(body []byte) string {
 	preview := strings.TrimSpace(string(body))
 	preview = strings.Join(strings.Fields(preview), " ")
@@ -572,6 +604,14 @@ func malformedCompletionMessage(body []byte) string {
 }
 func normalizeUsage(value usage) contracts.TokenUsage {
 	return contracts.TokenUsage{InputTokens: value.PromptTokens, OutputTokens: value.CompletionTokens}
+}
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 func orderedToolCalls(calls map[int]*contracts.ToolCall) ([]contracts.ToolCall, error) {
 	result := make([]contracts.ToolCall, 0, len(calls))

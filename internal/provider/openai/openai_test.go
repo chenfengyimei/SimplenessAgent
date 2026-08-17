@@ -115,6 +115,78 @@ func TestChatStreamEmitsOrderedDeltasAndCompletedAggregate(t *testing.T) {
 	}
 }
 
+func TestChatFallsBackToReasoningContentWhenAnswerIsEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"id":"chat_r1","choices":[{"message":{"content":null,"reasoning_content":"the model drafted {\"summary\":\"inspect\"} during thinking"},"finish_reason":"length"}],"usage":{"prompt_tokens":1234,"completion_tokens":3072}}`))
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, server.URL)
+	response, err := provider.Chat(context.Background(), contracts.ChatRequest{Messages: []contracts.Message{{Role: "user", Content: "plan"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Text == "" || !strings.Contains(response.Text, `"summary":"inspect"`) || response.FinishReason != "length" || response.Usage.OutputTokens != 3072 {
+		t.Fatalf("reasoning fallback did not recover the answer: %#v", response)
+	}
+}
+
+func TestChatStreamFallsBackToReasoningDeltasWhenNoContentArrives(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		flusher := writer.(http.Flusher)
+		events := []string{
+			`data: {"id":"chat_stream","choices":[{"delta":{"reasoning_content":"thinking about "}}]}`,
+			`data: {"id":"chat_stream","choices":[{"delta":{"reasoning":"the segment"}}]}`,
+			`data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":1536}}`,
+			"data: [DONE]",
+		}
+		for _, event := range events {
+			_, _ = fmt.Fprint(writer, event+"\n\n")
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, server.URL)
+	var events []contracts.StreamEvent
+	err := provider.ChatStream(context.Background(), contracts.ChatRequest{Messages: []contracts.Message{{Role: "user", Content: "plan"}}}, func(event contracts.StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var liveDeltas int
+	for _, event := range events {
+		if event.Type == contracts.StreamEventTextDelta {
+			liveDeltas++
+		}
+	}
+	completed := events[len(events)-1]
+	if liveDeltas != 0 {
+		t.Fatalf("reasoning deltas leaked into the live text stream: %#v", events)
+	}
+	if completed.Type != contracts.StreamEventCompleted || completed.Response.Text != "thinking about the segment" {
+		t.Fatalf("reasoning fallback missing from stream aggregate: %#v", completed)
+	}
+}
+
+func TestChatPrefersContentOverReasoningWhenBothExist(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"id":"chat_ok","choices":[{"message":{"content":"{\"summary\":\"final\"}","reasoning_content":"draft noise"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":4}}`))
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, server.URL)
+	response, err := provider.Chat(context.Background(), contracts.ChatRequest{Messages: []contracts.Message{{Role: "user", Content: "plan"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Text != `{"summary":"final"}` {
+		t.Fatalf("content should win over reasoning: %#v", response)
+	}
+}
+
 func TestProviderClassifiesCancellationWithoutLeakingCredential(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		<-request.Context().Done()

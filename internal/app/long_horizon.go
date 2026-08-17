@@ -21,6 +21,14 @@ type CreateLongHorizonTaskInput struct {
 	DeploymentID string
 }
 
+// Thinking-style local models can exhaust an output ceiling entirely on hidden
+// reasoning and then return an empty answer. These floors keep resumed tasks
+// (whose persisted profiles predate the raised defaults) on a usable budget.
+const (
+	minPlannerOutputTokens  = 3072
+	minVerifierOutputTokens = 1024
+)
+
 func (s *Service) CreateLongHorizonTask(ctx context.Context, input CreateLongHorizonTaskInput) (contracts.Task, contracts.HorizonState, error) {
 	if input.CreateTaskInput.PermissionMode == contracts.PermissionModeDevelopment {
 		return contracts.Task{}, contracts.HorizonState{}, contracts.NewError(contracts.ErrPermissionDenied, "long-horizon mode requires PLAN or approval-gated EDIT permission; DEVELOPMENT would bypass mandatory write confirmation")
@@ -276,6 +284,7 @@ func (s *Service) planNextHorizonSegment(ctx context.Context, item contracts.Tas
 	if err != nil {
 		return contracts.LongHorizonCycleResult{}, err
 	}
+	profile.MaxOutputTokens = maxInt(profile.MaxOutputTokens, minPlannerOutputTokens)
 	planner, err := horizoncore.NewSegmentPlanner(provider)
 	if err != nil {
 		return contracts.LongHorizonCycleResult{}, err
@@ -483,6 +492,7 @@ func (s *Service) assessHorizonStage(ctx context.Context, item contracts.Task, s
 	if err != nil {
 		return contracts.StageVerificationOpinion{}, contracts.TokenUsage{}, err
 	}
+	profile.MaxOutputTokens = maxInt(profile.MaxOutputTokens, minVerifierOutputTokens)
 	verifier, err := horizoncore.NewStageVerifier(provider)
 	if err != nil {
 		return contracts.StageVerificationOpinion{}, contracts.TokenUsage{}, err
