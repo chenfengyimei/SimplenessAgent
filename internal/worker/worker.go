@@ -47,6 +47,11 @@ type Input struct {
 	ReliableContextTokens   int
 	MaxToolCallsPerResponse int
 	Temperature             *float64
+	// WriteCompletionRequired enforces that a WRITE step ends with a write
+	// proposal or execution instead of read-only evidence. The App Service
+	// enables it for long-horizon tasks; single-plan keeps its own turn-level
+	// guard with mode-specific guidance.
+	WriteCompletionRequired bool
 }
 
 type Result struct {
@@ -98,6 +103,12 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 	seen := map[string]struct{}{}
 	cachedReads := map[string]contracts.ToolResult{}
 	repairAttempted := false
+	writeRepairAttempted := false
+	hasMutatingResult := false
+	// A WRITE step exists to apply or propose a file change. If the model tries
+	// to finish it with read-only evidence, the whole task can "complete" with
+	// zero product files, so the obligation is enforced deterministically.
+	writeObligation := input.WriteCompletionRequired && input.Step.Risk == contracts.RiskWrite && containsMutatingTool(allowed)
 	for iteration := 0; iteration < input.Step.Budget.MaxIterations; iteration++ {
 		if err := runContext.Err(); err != nil {
 			return result, cancelledOrTimedOut(err)
@@ -132,6 +143,14 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 			return result, contracts.NewError(contracts.ErrBudgetExceeded, "provider exceeded the requested response token limit")
 		}
 		if len(response.ToolCalls) == 0 {
+			if writeObligation && !hasMutatingResult {
+				if !writeRepairAttempted && iteration+1 < input.Step.Budget.MaxIterations {
+					messages = append(messages, contracts.Message{Role: "user", Content: writeObligationInstruction(allowed)})
+					writeRepairAttempted = true
+					continue
+				}
+				return result, contracts.NewError(contracts.ErrBudgetExceeded, "write-intent step ended without any write proposal")
+			}
 			result.Text = response.Text
 			return result, nil
 		}
@@ -172,8 +191,12 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 			if err := runContext.Err(); err != nil {
 				return result, cancelledOrTimedOut(err)
 			}
-			if definition, found := toolDefinition(allowed, validated.call.Name); found && definition.RiskClass == contracts.RiskRead {
-				cachedReads[validated.actionKey] = toolResult
+			if definition, found := toolDefinition(allowed, validated.call.Name); found {
+				if definition.RiskClass == contracts.RiskRead {
+					cachedReads[validated.actionKey] = toolResult
+				} else {
+					hasMutatingResult = true
+				}
 			}
 			result.ToolResults = append(result.ToolResults, toolResult)
 			batchNames = append(batchNames, validated.call.Name)
@@ -193,6 +216,9 @@ func (w *Worker) Run(ctx context.Context, input Input) (Result, error) {
 			return result, contracts.NewError(contracts.ErrBudgetExceeded, "cumulative token budget exceeded")
 		}
 		if finalizable, stableFailures := finalizableReadBatch(batchNames, allowed, result.ToolResults[batchStart:]); iteration+1 == input.Step.Budget.MaxIterations && finalizable {
+			if writeObligation && !hasMutatingResult {
+				return result, contracts.NewError(contracts.ErrBudgetExceeded, "write-intent step ended without any write proposal")
+			}
 			// A tool call consumes a model iteration. Small models often use the last
 			// permitted turn for one final read outcome and therefore have no turn left
 			// to paraphrase evidence the controller already persisted. A stable,
@@ -337,6 +363,25 @@ func toolCallRepairInstruction(err error, allowed []contracts.ToolDefinition, li
 		names = append(names, definition.Name)
 	}
 	return "The controller rejected your previous tool request before executing any tool: " + err.Error() + ". Fix it and retry. The ONLY tools allowed for this step are: " + strings.Join(names, ", ") + ". You may request at most " + fmt.Sprintf("%d", limit) + " tool call(s) per response, and every tool argument must be valid JSON matching its parameter schema."
+}
+
+func writeObligationInstruction(allowed []contracts.ToolDefinition) string {
+	names := make([]string, 0, len(allowed))
+	for _, definition := range allowed {
+		if definition.RiskClass != contracts.RiskRead {
+			names = append(names, definition.Name)
+		}
+	}
+	return "This step's goal requires creating or changing files, and no write tool has been used yet. Read-only evidence cannot complete it. Call one of the write tools now to apply or propose the change: " + strings.Join(names, ", ") + ". Do not return a final answer without a write tool call."
+}
+
+func containsMutatingTool(allowed []contracts.ToolDefinition) bool {
+	for _, definition := range allowed {
+		if definition.RiskClass != contracts.RiskRead {
+			return true
+		}
+	}
+	return false
 }
 
 func toolDefinition(definitions []contracts.ToolDefinition, name string) (contracts.ToolDefinition, bool) {

@@ -122,6 +122,64 @@ func TestRunRejectsToolOutsideStepAllowlist(t *testing.T) {
 	assertCode(t, err, contracts.ErrToolNotAllowed)
 }
 
+func TestWriteStepCannotFinishWithoutWriteProposal(t *testing.T) {
+	t.Run("recovers via obligation instruction", func(t *testing.T) {
+		provider := &scriptedProvider{responses: []contracts.ChatResponse{
+			{Text: "I inspected everything; no writes needed."},
+			{ToolCalls: []contracts.ToolCall{{ID: "write_1", Name: "write_file", ArgumentsJSON: `{"path":"index.html","content":"<html></html>"}`}}},
+		}, rejectOrphanToolCalls: true}
+		registry := tool.NewRegistry()
+		if err := registry.Register(contracts.ToolDefinition{Name: "write_file", RiskClass: contracts.RiskWrite, ParametersSchema: map[string]interface{}{"type": "object"}}, func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+			return contracts.ToolResult{Status: "WAITING_APPROVAL", Summary: "waiting for user approval"}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		worker, _ := New(provider, registry)
+		step := contracts.StepSpec{StepID: "step_1", Title: "Write", Goal: "Create index.html", AllowedTools: []string{"write_file"}, WorkspaceScopes: []string{"."}, Risk: contracts.RiskWrite, Budget: contracts.StepBudget{MaxIterations: 3}}
+		result, err := worker.Run(context.Background(), Input{Step: step, WriteCompletionRequired: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.ToolResults) != 1 || result.ToolResults[0].Status != "WAITING_APPROVAL" {
+			t.Fatalf("write obligation repair did not lead to a proposal: %#v", result)
+		}
+		instruction := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+		if instruction.Role != "user" || !strings.Contains(instruction.Content, "no write tool has been used yet") {
+			t.Fatalf("obligation instruction missing: %#v", instruction)
+		}
+	})
+	t.Run("fails closed after ignoring the instruction", func(t *testing.T) {
+		provider := &scriptedProvider{responses: []contracts.ChatResponse{
+			{Text: "reads are enough."},
+			{Text: "still no writes."},
+		}}
+		registry := tool.NewRegistry()
+		if err := registry.Register(contracts.ToolDefinition{Name: "write_file", RiskClass: contracts.RiskWrite, ParametersSchema: map[string]interface{}{"type": "object"}}, func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+			t.Fatal("write tool must not run")
+			return contracts.ToolResult{}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		worker, _ := New(provider, registry)
+		step := contracts.StepSpec{StepID: "step_1", Title: "Write", Goal: "Create index.html", AllowedTools: []string{"write_file"}, WorkspaceScopes: []string{"."}, Risk: contracts.RiskWrite, Budget: contracts.StepBudget{MaxIterations: 2}}
+		_, err := worker.Run(context.Background(), Input{Step: step, WriteCompletionRequired: true})
+		if err == nil || !strings.Contains(err.Error(), "write-intent step ended without any write proposal") {
+			t.Fatalf("write step completed without a proposal: %v", err)
+		}
+	})
+	t.Run("read-only steps are unaffected", func(t *testing.T) {
+		provider := &scriptedProvider{responses: []contracts.ChatResponse{{Text: "Evidence-based summary."}}}
+		registry := testRegistry(t, contracts.RiskRead, strictQuerySchema(), func(context.Context, map[string]interface{}) (contracts.ToolResult, error) {
+			return contracts.ToolResult{Status: "SUCCEEDED"}, nil
+		})
+		worker, _ := New(provider, registry)
+		result, err := worker.Run(context.Background(), Input{Step: testStep(1)})
+		if err != nil || result.Text != "Evidence-based summary." {
+			t.Fatalf("read-only step was blocked: result=%#v err=%v", result, err)
+		}
+	})
+}
+
 func TestRunRejectsInvalidOrRepeatedToolActions(t *testing.T) {
 	t.Run("invalid schema with retry", func(t *testing.T) {
 		invalidResponse := contracts.ChatResponse{ToolCalls: []contracts.ToolCall{{ID: "call_1", Name: "lookup", ArgumentsJSON: `{}`}}}

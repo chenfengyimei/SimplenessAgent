@@ -60,6 +60,7 @@ export const useAppStore = defineStore('app', () => {
   const capability = ref<Capability | null>(null)
   const diagnosticLogs = ref<DiagnosticEntry[]>([])
   const agentStatus = ref<AgentStatus | null>(null)
+  const appBuildTime = ref('')
 
   // Artifact viewer state
   const artifactViewerOpen = ref(false)
@@ -125,14 +126,16 @@ export const useAppStore = defineStore('app', () => {
 
   async function refresh() {
     try {
-      const [ws, deps, convs] = await Promise.all([
+      const [ws, deps, convs, buildTime] = await Promise.all([
         window.go.main.App.ListWorkspaces(),
         window.go.main.App.ListDeployments(),
         window.go.main.App.ListConversations(),
+        window.go.main.App.AppBuildTime(),
       ])
       workspaces.value = ws as Workspace[]
       deployments.value = deps as Deployment[]
       conversations.value = convs as Conversation[]
+      appBuildTime.value = String(buildTime ?? '')
       if (!strategyInitialized && conversations.value.length) {
         const previouslyUsedLongHorizon = conversations.value.some((conversation) => conversation.spec?.execution_strategy === 'INCREMENTAL_HORIZON')
         chooseExecutionStrategy(previouslyUsedLongHorizon ? 'INCREMENTAL_HORIZON' : 'SINGLE_PLAN')
@@ -333,7 +336,7 @@ export const useAppStore = defineStore('app', () => {
     workspaceID, deploymentID, permissionMode, executionStrategy, prompt, busy, error, notice,
     collapsed, chatBodyEl, showWorkspaceForm, workspaceName, workspacePath,
     deploymentName, deploymentEndpoint, deploymentModel, apiKey, providerTemplate,
-    capability, diagnosticLogs, agentStatus,
+    capability, diagnosticLogs, agentStatus, appBuildTime,
     artifactViewerOpen, artifactViewerArtifact, artifactViewerContent,
     planViewerOpen, planViewerTaskID,
     selectedWorkspace, selectedDeployment, groupedConversations,

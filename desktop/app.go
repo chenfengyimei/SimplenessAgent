@@ -523,6 +523,20 @@ func (a *App) GetLongHorizonStatus(taskID string) (contracts.HorizonState, error
 	return service.GetLongHorizonStatus(a.ctx, taskID)
 }
 
+// AppBuildTime reports the running executable's modification time so the UI
+// (and bug reports) can verify which build is actually in use.
+func (a *App) AppBuildTime() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	info, err := os.Stat(executable)
+	if err != nil {
+		return ""
+	}
+	return info.ModTime().Format("2006-01-02 15:04")
+}
+
 // buildLongHorizonCompletionSummary composes the user-facing completion message:
 // what was accomplished, which files were produced, where they live and how to
 // launch the result. Everything is deterministic — the model's own final step

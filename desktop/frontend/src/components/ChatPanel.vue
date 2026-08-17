@@ -137,7 +137,7 @@ function openArtifacts(turn: Turn) {
         </div>
         <button class="send-button" :disabled="!store.canSend" @click="store.sendMessage">发送 <span>↑</span></button>
       </div>
-      <small class="mode-note">{{ store.executionStrategy === 'INCREMENTAL_HORIZON' ? '长程 Agent' : '单次计划' }} · {{ modeLabel(store.permissionMode) }}：{{ modeHint(store.permissionMode) }}<template v-if="store.executionStrategy === 'INCREMENTAL_HORIZON' && store.permissionMode === 'PLAN'"> ⚠️ 只读权限下长程任务无法创建或修改文件，只会产出侦察报告；需要生成文件请切换到编辑模式。</template></small>
+      <small class="mode-note">{{ store.executionStrategy === 'INCREMENTAL_HORIZON' ? '长程 Agent' : '单次计划' }} · {{ modeLabel(store.permissionMode) }}：{{ modeHint(store.permissionMode) }}<template v-if="store.executionStrategy === 'INCREMENTAL_HORIZON' && store.permissionMode === 'PLAN'"> ⚠️ 只读权限下长程任务无法创建或修改文件，只会产出侦察报告；需要生成文件请切换到编辑模式。</template><template v-if="store.appBuildTime"> · 客户端构建 {{ store.appBuildTime }}</template></small>
     </div>
   </section>
 </template>

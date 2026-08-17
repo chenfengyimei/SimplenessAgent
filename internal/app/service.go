@@ -1870,6 +1870,7 @@ func (s *Service) RunModelStep(ctx context.Context, input RunModelStepInput) (Ta
 	}
 	workerInput := worker.Input{DeploymentID: deployment.ID, Step: step, PermissionMode: permissionMode, ContextPackage: &contextPackage, Skills: input.Skills, EffectiveBudget: effectiveBudget, ReliableContextTokens: contextWindow}
 	if item.Spec.ExecutionStrategy == contracts.ExecutionStrategyIncrementalHorizon {
+		workerInput.WriteCompletionRequired = true
 		if profile, profileErr := s.store.GetModelRoleProfile(ctx, deployment.ID, contracts.ModelRoleExecutor); profileErr == nil {
 			profile = normalizeExecutorProfile(profile)
 			workerInput.MaxToolCallsPerResponse = profile.MaxToolCalls
