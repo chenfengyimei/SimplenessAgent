@@ -523,8 +523,114 @@ func (a *App) GetLongHorizonStatus(taskID string) (contracts.HorizonState, error
 	return service.GetLongHorizonStatus(a.ctx, taskID)
 }
 
-func (a *App) advanceLongConversation(service *app.Service, taskID, conversationID string) (LongConversationCycle, error) {
-	cycle, err := service.AdvanceLongHorizonTask(a.ctx, taskID)
+// buildLongHorizonCompletionSummary composes the user-facing completion message:
+// what was accomplished, which files were produced, where they live and how to
+// launch the result. Everything is deterministic — the model's own final step
+// report is quoted, never re-generated.
+func (a *App) buildLongHorizonCompletionSummary(service *app.Service, taskID string, cycle contracts.LongHorizonCycleResult) (string, error) {
+	snapshot, err := service.GetTaskSnapshot(a.ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	goal := strings.TrimSpace(snapshot.Task.Goal)
+	var builder strings.Builder
+	builder.WriteString("✅ 长程任务已完成，最终验收通过。\n\n")
+	builder.WriteString("【目标】" + goal + "\n")
+	if agentSummary := latestAgentReportSummary(service, taskID); agentSummary != "" {
+		builder.WriteString("\n【Agent 最终报告】\n" + agentSummary + "\n")
+	}
+	workspaceRoot := ""
+	if workspaceItem, workspaceErr := service.GetWorkspaceByID(a.ctx, snapshot.Task.WorkspaceID); workspaceErr == nil {
+		workspaceRoot = workspaceItem.RootPath
+	}
+	if files, launch := scanWorkspaceForLaunch(workspaceRoot); len(files) > 0 {
+		builder.WriteString("\n【产出文件】（工作区：" + workspaceRoot + "）\n")
+		for _, file := range files {
+			builder.WriteString("- " + file + "\n")
+		}
+		if launch != "" {
+			builder.WriteString("\n【如何启动】\n" + launch)
+		}
+	}
+	builder.WriteString(fmt.Sprintf("\n\n【执行统计】完成 %d 步（另有 %d 步来自失败后被替换的旧计划段，未重复执行），Token 用量见任务详情。", cycle.StepsCompleted, cycle.StepsPlanned-cycle.StepsCompleted))
+	return builder.String(), nil
+}
+
+func latestAgentReportSummary(service *app.Service, taskID string) string {
+	content, err := service.ReadTaskArtifact(context.Background(), taskID, "AGENT_REPORT")
+	if err != nil {
+		return ""
+	}
+	var report contracts.AgentReport
+	if json.Unmarshal(content, &report) != nil {
+		return ""
+	}
+	return strings.TrimSpace(report.Summary)
+}
+
+// scanWorkspaceForLaunch lists bounded, depth-limited product files and infers
+// a deterministic launch instruction from well-known entry files.
+func scanWorkspaceForLaunch(root string) ([]string, string) {
+	if strings.TrimSpace(root) == "" {
+		return nil, ""
+	}
+	ignored := map[string]bool{"node_modules": true, ".git": true, "dist": true, "build": true, "bin": true, "vendor": true, "__pycache__": true, ".cache": true}
+	files := []string{}
+	hasIndexHTML, hasPackageJSON, hasGoMod, hasRequirements, hasMainPy, hasCargo := false, false, false, false, false, false
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return filepath.SkipDir
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		depth := strings.Count(rel, string(os.PathSeparator))
+		if entry.IsDir() {
+			if depth >= 2 || ignored[entry.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if depth > 2 || len(files) >= 25 {
+			return nil
+		}
+		switch strings.ToLower(entry.Name()) {
+		case "index.html":
+			hasIndexHTML = true
+		case "package.json":
+			hasPackageJSON = true
+		case "go.mod":
+			hasGoMod = true
+		case "requirements.txt":
+			hasRequirements = true
+		case "main.py", "app.py":
+			hasMainPy = true
+		case "cargo.toml":
+			hasCargo = true
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	launch := ""
+	switch {
+	case hasPackageJSON:
+		launch = "进入工作区目录后执行：npm install（首次）→ npm run dev 或 npm start；如需打包再执行 npm run build。"
+	case hasIndexHTML:
+		launch = "直接用浏览器打开工作区里的 index.html 即可（双击或拖入浏览器窗口）。"
+	case hasGoMod:
+		launch = "进入工作区目录后执行：go run .（需本机安装 Go）。"
+	case hasMainPy && hasRequirements:
+		launch = "进入工作区目录后执行：pip install -r requirements.txt（首次）→ python main.py。"
+	case hasMainPy:
+		launch = "进入工作区目录后执行：python main.py。"
+	case hasCargo:
+		launch = "进入工作区目录后执行：cargo run（需本机安装 Rust）。"
+	}
+	return files, launch
+}
+
+func (a *App) advanceLongConversation(service *app.Service, taskID, conversationID string) (LongConversationCycle, error) {	cycle, err := service.AdvanceLongHorizonTask(a.ctx, taskID)
 	if err != nil {
 		a.logError("long-horizon", "cycle failed", err, map[string]string{"conversation_id": conversationID, "turn_task_id": taskID})
 		return LongConversationCycle{}, err
@@ -532,6 +638,16 @@ func (a *App) advanceLongConversation(service *app.Service, taskID, conversation
 	a.emitAgentStatus(map[string]interface{}{"conversation_id": conversationID, "status": strings.ToLower(string(cycle.Status)), "message": fmt.Sprintf("长程 Agent：%s · %s", cycle.Stage, cycle.Action)})
 	if cycle.Status != contracts.HorizonActive || cycle.AwaitingCheckpoint {
 		message := fmt.Sprintf("长程任务已执行到 %s 阶段：%s。已规划 %d 步，完成 %d 步。", cycle.Stage, cycle.Action, cycle.StepsPlanned, cycle.StepsCompleted)
+		if cycle.StepsPlanned > cycle.StepsCompleted && cycle.Action != "COMPLETED" {
+			message += fmt.Sprintf("（其中 %d 步来自失败后被替换的旧计划段，不会重复执行）", cycle.StepsPlanned-cycle.StepsCompleted)
+		}
+		if cycle.Action == "COMPLETED" {
+			if summary, summaryErr := a.buildLongHorizonCompletionSummary(service, taskID, cycle); summaryErr == nil {
+				message = summary
+			} else {
+				a.logError("long-horizon", "build completion summary failed", summaryErr, map[string]string{"conversation_id": conversationID, "turn_task_id": taskID})
+			}
+		}
 		if cycle.CheckpointReason != "" {
 			message += "\n\n暂停原因：" + cycle.CheckpointReason
 		}

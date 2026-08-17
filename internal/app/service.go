@@ -79,6 +79,12 @@ func (s *Service) CreateWorkspace(ctx context.Context, name, path string) (contr
 func (s *Service) ListWorkspaces(ctx context.Context) ([]contracts.Workspace, error) {
 	return s.store.ListWorkspaces(ctx)
 }
+
+// GetWorkspaceByID exposes a single workspace record for desktop consumers
+// that already hold a task's WorkspaceID (for example, completion summaries).
+func (s *Service) GetWorkspaceByID(ctx context.Context, id string) (contracts.Workspace, error) {
+	return s.store.GetWorkspace(ctx, id)
+}
 func (s *Service) ListTasks(ctx context.Context, workspaceID string) ([]contracts.Task, error) {
 	return s.store.ListTasks(ctx, workspaceID)
 }
