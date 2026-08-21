@@ -7,6 +7,8 @@ import {diagnostics} from '../models';
 
 export function AdvanceLongConversation(arg1:string):Promise<main.LongConversationCycle>;
 
+export function AppBuildTime():Promise<string>;
+
 export function ApproveConversationCommand(arg1:string,arg2:string):Promise<main.ConversationView>;
 
 export function ApproveConversationWrite(arg1:string,arg2:string):Promise<main.ConversationView>;

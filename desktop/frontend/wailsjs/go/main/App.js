@@ -6,6 +6,10 @@ export function AdvanceLongConversation(arg1) {
   return window['go']['main']['App']['AdvanceLongConversation'](arg1);
 }
 
+export function AppBuildTime() {
+  return window['go']['main']['App']['AppBuildTime']();
+}
+
 export function ApproveConversationCommand(arg1, arg2) {
   return window['go']['main']['App']['ApproveConversationCommand'](arg1, arg2);
 }

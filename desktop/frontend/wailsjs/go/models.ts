@@ -430,11 +430,11 @@ export namespace contracts {
 	    title: string;
 	    goal: string;
 	    completion_gate: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new HorizonStage(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.stage_id = source["stage_id"];
@@ -450,11 +450,11 @@ export namespace contracts {
 	    stages: HorizonStage[];
 	    // Go type: time
 	    created_at: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new HorizonPlan(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.version = source["version"];
@@ -463,7 +463,7 @@ export namespace contracts {
 	        this.stages = this.convertValues(source["stages"], HorizonStage);
 	        this.created_at = this.convertValues(source["created_at"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -482,15 +482,15 @@ export namespace contracts {
 		    return a;
 		}
 	}
-
+	
 	export class TokenUsage {
 	    input_tokens: number;
 	    output_tokens: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TokenUsage(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.input_tokens = source["input_tokens"];
@@ -522,11 +522,11 @@ export namespace contracts {
 	    deadline_at: any;
 	    // Go type: time
 	    updated_at: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new HorizonState(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.version = source["version"];
@@ -551,7 +551,7 @@ export namespace contracts {
 	        this.deadline_at = this.convertValues(source["deadline_at"], null);
 	        this.updated_at = this.convertValues(source["updated_at"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -582,11 +582,11 @@ export namespace contracts {
 	    remaining_steps: number;
 	    awaiting_checkpoint: boolean;
 	    checkpoint_reason?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new LongHorizonCycleResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.version = source["version"];
@@ -892,9 +892,9 @@ export namespace contracts {
 		    return a;
 		}
 	}
-
-
-
+	
+	
+	
 	export class Workspace {
 	    id: string;
 	    version: number;
@@ -1122,18 +1122,18 @@ export namespace main {
 	    view: ConversationView;
 	    task_id: string;
 	    cycle: contracts.LongHorizonCycleResult;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new LongConversationCycle(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.view = this.convertValues(source["view"], ConversationView);
 	        this.task_id = source["task_id"];
 	        this.cycle = this.convertValues(source["cycle"], contracts.LongHorizonCycleResult);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1230,3 +1230,4 @@ export namespace main {
 	}
 
 }
+
